@@ -1,0 +1,128 @@
+import React from 'react';
+import {
+  CheckCircle,
+  Clock,
+  Play,
+  Settings2,
+  Sliders,
+  Cpu,
+  Layers,
+  ChevronDown,
+  Info
+} from 'lucide-react';
+
+export default function PipelineSidebar({ activeStage, onSelectStage }) {
+  const stages = [
+    {
+      id: 'feature_extraction',
+      num: '01',
+      name: 'Feature Extraction',
+      engine: 'COLMAP (SIFT)',
+      status: 'done',
+      stats: '128 / 128 images calibrated',
+    },
+    {
+      id: 'feature_matching',
+      num: '02',
+      name: 'Feature Matching',
+      engine: 'COLMAP Exhaustive',
+      status: 'done',
+      stats: '8,128 image pairs matched',
+    },
+    {
+      id: 'sparse_reconstruction',
+      num: '03',
+      name: 'Sparse Point Cloud (SfM)',
+      engine: 'COLMAP Mapper',
+      status: 'done',
+      stats: '61,129 3D landmarks',
+    },
+    {
+      id: 'dense_reconstruction',
+      num: '04',
+      name: 'Dense Point Cloud',
+      engine: 'OpenMVS Densify',
+      status: 'done',
+      stats: '7,845,251 dense points',
+    },
+    {
+      id: 'mesh_reconstruction',
+      num: '05',
+      name: 'Mesh Generation',
+      engine: 'OpenMVS ReconstructMesh',
+      status: 'done',
+      stats: '3,411,172 vertices / 6.8M faces',
+    },
+    {
+      id: 'texture_mapping',
+      num: '06',
+      name: 'Texture Mapping',
+      engine: 'OpenMVS TextureMesh',
+      status: 'pending',
+      stats: 'Optional — Planned next phase',
+    },
+  ];
+
+  return (
+    <aside className="pipeline-sidebar" aria-label="Pipeline Stages">
+      <div className="sidebar-header">
+        <span className="sidebar-title">Reconstruction Pipeline</span>
+        <button type="button" className="btn-ghost" title="Pipeline parameters">
+          <Settings2 size={14} />
+        </button>
+      </div>
+
+      {/* Stage list */}
+      <div className="stages-list">
+        {stages.map((stage) => {
+          const isCompleted = stage.status === 'done';
+          const isPending = stage.status === 'pending';
+
+          return (
+            <div
+              key={stage.id}
+              className={`stage-item ${isCompleted ? 'completed' : ''}`}
+            >
+              <div className="stage-top">
+                <div className="stage-name-group">
+                  <span className="stage-number">{stage.num}</span>
+                  <span className="stage-title">{stage.name}</span>
+                </div>
+                <span className={`stage-badge ${stage.status}`}>
+                  {isCompleted ? 'Ready' : 'Pending'}
+                </span>
+              </div>
+              <div className="stage-detail">
+                {stage.stats}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Sidebar Footer with Execution Summary */}
+      <div className="sidebar-footer">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Concurrency</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>4 CPU Threads</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>Memory Limit</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>6.0 GB Cap (8 GB Total)</span>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          className="btn-primary"
+          style={{ width: '100%', marginTop: '4px' }}
+          title="Backend execution will be connected in Sprint 2"
+        >
+          <Play size={14} fill="currentColor" />
+          <span>Re-run Pipeline</span>
+        </button>
+      </div>
+    </aside>
+  );
+}
