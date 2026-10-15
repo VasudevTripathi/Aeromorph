@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import {
   Rotate3d,
   Move,
@@ -14,18 +15,27 @@ import {
   Loader2,
   AlertTriangle,
   FolderPlus,
-  Box
+  FolderOpen,
+  Box,
+  FileCode,
+  Sparkles
 } from 'lucide-react';
 
 export default function Viewport3D() {
-  // View state switcher for inspecting required UI states
+  // Viewport UI States
   const [viewportState, setViewportState] = useState('loaded'); // 'loaded' | 'loading' | 'empty' | 'error'
   const [renderMode, setRenderMode] = useState('shaded'); // 'shaded' | 'wireframe' | 'points'
   const [lightingMode, setLightingMode] = useState('studio'); // 'studio' | 'flat'
   const [interactionMode, setInteractionMode] = useState('orbit'); // 'orbit' | 'pan'
   const [webglError, setWebglError] = useState(null);
 
-  // Live WebGL runtime metrics (measured directly from Three.js renderer)
+  // PLY Model Loading States
+  const [isLoadingPly, setIsLoadingPly] = useState(false);
+  const [plyLoadingName, setPlyLoadingName] = useState('');
+  const [plyError, setPlyError] = useState(null);
+  const [loadedModel, setLoadedModel] = useState(null); // Metadata of loaded PLY model or null if demo pavilion
+
+  // Live Measured WebGL Runtime Telemetry
   const [liveMetrics, setLiveMetrics] = useState({
     fps: 60,
     vertices: 0,
@@ -36,19 +46,52 @@ export default function Viewport3D() {
 
   // DOM References
   const canvasContainerRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const loadRequestIdRef = useRef(0);
+
+  // Three.js Core References
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
+  const gridHelperRef = useRef(null);
+  const axesHelperRef = useRef(null);
   const lightsRef = useRef({ ambient: null, main: null, fill: null });
-  const objectGroupsRef = useRef({ solid: null, wireframe: null, points: null });
 
-  // Initial camera parameters for reset functionality
-  const INITIAL_CAMERA_POS = new THREE.Vector3(6.5, 4.8, 7.2);
-  const INITIAL_TARGET_POS = new THREE.Vector3(0, 1.1, 0);
+  // Geometry Group References
+  const demoPavilionGroupRef = useRef(null);
+  const loadedModelGroupRef = useRef(null);
+  const loadedSubGroupsRef = useRef({ solid: null, wireframe: null, points: null });
+
+  // Camera initial framing references (updated when model is fitted)
+  const defaultCameraPosRef = useRef(new THREE.Vector3(6.5, 4.8, 7.2));
+  const defaultTargetPosRef = useRef(new THREE.Vector3(0, 1.1, 0));
 
   // --------------------------------------------------------------------------
-  // Three.js Scene Initialization and Lifecycle
+  // Helper: Dispose all geometries & materials inside a group
+  // --------------------------------------------------------------------------
+  const disposeGroup = (group) => {
+    if (!group) return;
+    while (group.children.length > 0) {
+      const child = group.children[0];
+      if (child.isGroup) {
+        disposeGroup(child);
+      } else {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach((m) => m.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      }
+      group.remove(child);
+    }
+  };
+
+  // --------------------------------------------------------------------------
+  // Three.js Scene Setup & Lifecycle
   // --------------------------------------------------------------------------
   useEffect(() => {
     const container = canvasContainerRef.current;
@@ -62,14 +105,14 @@ export default function Viewport3D() {
       // 1. Scene Setup
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x080A0B);
-      scene.fog = new THREE.FogExp2(0x080A0B, 0.015);
+      scene.fog = new THREE.FogExp2(0x080A0B, 0.012);
       sceneRef.current = scene;
 
       // 2. Camera Setup
       const width = container.clientWidth || 800;
       const height = container.clientHeight || 500;
       const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-      camera.position.copy(INITIAL_CAMERA_POS);
+      camera.position.copy(defaultCameraPosRef.current);
       cameraRef.current = camera;
 
       // 3. WebGL Renderer with strict resource caps for 8 GB RAM / iGPU
@@ -83,18 +126,15 @@ export default function Viewport3D() {
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.05;
       renderer.domElement.className = 'viewport-three-canvas';
-      renderer.domElement.style.display = 'block';
-      renderer.domElement.style.width = '100%';
-      renderer.domElement.style.height = '100%';
       rendererRef.current = renderer;
 
-      // Clear any existing children before appending (Strict Mode safety)
+      // Clear any existing children before appending (React Strict Mode safety)
       while (container.firstChild) {
         container.removeChild(container.firstChild);
       }
       container.appendChild(renderer.domElement);
 
-      // Detect active WebGL version for telemetry
+      // Detect active WebGL version
       const gl = renderer.getContext();
       const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
       const webglVersion = isWebGL2 ? 'WebGL 2.0' : 'WebGL 1.0';
@@ -103,123 +143,93 @@ export default function Viewport3D() {
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.dampingFactor = 0.05;
-      controls.minDistance = 2.0;
-      controls.maxDistance = 35.0;
-      controls.maxPolarAngle = Math.PI / 2 + 0.08; // Allow slight sub-horizon viewing
-      controls.target.copy(INITIAL_TARGET_POS);
+      controls.minDistance = 1.0;
+      controls.maxDistance = 60.0;
+      controls.minPolarAngle = 0;
+      controls.maxPolarAngle = Math.PI;
+      controls.target.copy(defaultTargetPosRef.current);
       controls.update();
       controlsRef.current = controls;
 
       // 5. Lighting Setup
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
       scene.add(ambientLight);
 
       const mainLight = new THREE.DirectionalLight(0xffffff, 1.3);
-      mainLight.position.set(8, 12, 9);
+      mainLight.position.set(10, 14, 10);
       scene.add(mainLight);
 
       const fillLight = new THREE.DirectionalLight(0x7890a8, 0.5);
-      fillLight.position.set(-8, 6, -7);
+      fillLight.position.set(-10, 6, -8);
       scene.add(fillLight);
 
       lightsRef.current = { ambient: ambientLight, main: mainLight, fill: fillLight };
 
       // 6. Ground Grid & Coordinate Helpers
-      // GridHelper: subtle electric lime accent on center lines (0x4e6320), dark graphite grid (0x1e2329)
-      const gridHelper = new THREE.GridHelper(16, 16, 0x4e6320, 0x1e2329);
+      const gridHelper = new THREE.GridHelper(20, 20, 0x4e6320, 0x1e2329);
       gridHelper.position.y = 0;
       scene.add(gridHelper);
+      gridHelperRef.current = gridHelper;
 
-      // World Axes Helper (Red=X, Green=Y, Blue=Z)
-      const axesHelper = new THREE.AxesHelper(1.6);
+      const axesHelper = new THREE.AxesHelper(1.8);
       axesHelper.position.set(0, 0.01, 0);
       scene.add(axesHelper);
+      axesHelperRef.current = axesHelper;
 
-      // 7. Low-Poly Architectural Demo Geometry Construction
-      // Represents a drone survey subject (Pavilion Structure) built from Three.js primitives
-      const solidGroup = new THREE.Group();
-      const wireframeGroup = new THREE.Group();
-      const pointsGroup = new THREE.Group();
-      scene.add(solidGroup);
-      scene.add(wireframeGroup);
-      scene.add(pointsGroup);
-      objectGroupsRef.current = { solid: solidGroup, wireframe: wireframeGroup, points: pointsGroup };
+      // 7. Demo Pavilion Model Group
+      const demoPavilionGroup = new THREE.Group();
+      scene.add(demoPavilionGroup);
+      demoPavilionGroupRef.current = demoPavilionGroup;
 
-      // Materials for Shaded Mode
-      const baseMaterial = new THREE.MeshStandardMaterial({
-        color: 0x1e2329,
-        roughness: 0.65,
-        metalness: 0.2,
-      });
+      const demoSolidGroup = new THREE.Group();
+      const demoWireGroup = new THREE.Group();
+      const demoPointsGroup = new THREE.Group();
+      demoPavilionGroup.add(demoSolidGroup);
+      demoPavilionGroup.add(demoWireGroup);
+      demoPavilionGroup.add(demoPointsGroup);
 
-      const columnMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2a313a,
-        roughness: 0.55,
-        metalness: 0.25,
-      });
+      // 8. Loaded Model Root Group (for local PLY files)
+      const loadedModelGroup = new THREE.Group();
+      loadedModelGroup.visible = false;
+      scene.add(loadedModelGroup);
+      loadedModelGroupRef.current = loadedModelGroup;
 
-      const accentMaterial = new THREE.MeshStandardMaterial({
-        color: 0xD5FF65,
-        roughness: 0.35,
-        metalness: 0.3,
-        emissive: 0x1e2d00,
-        emissiveIntensity: 0.4,
-      });
+      const loadedSolidGroup = new THREE.Group();
+      const loadedWireGroup = new THREE.Group();
+      const loadedPointsGroup = new THREE.Group();
+      loadedModelGroup.add(loadedSolidGroup);
+      loadedModelGroup.add(loadedWireGroup);
+      loadedModelGroup.add(loadedPointsGroup);
+      loadedSubGroupsRef.current = { solid: loadedSolidGroup, wireframe: loadedWireGroup, points: loadedPointsGroup };
 
-      // Material for Wireframe Mode
-      const wireframeMaterial = new THREE.MeshBasicMaterial({
-        color: 0xD5FF65,
-        wireframe: true,
-      });
+      // 9. Construct Demo Pavilion Primitives
+      const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x1e2329, roughness: 0.65, metalness: 0.2 });
+      const columnMaterial = new THREE.MeshStandardMaterial({ color: 0x2a313a, roughness: 0.55, metalness: 0.25 });
+      const accentMaterial = new THREE.MeshStandardMaterial({ color: 0xD5FF65, roughness: 0.35, metalness: 0.3, emissive: 0x1e2d00, emissiveIntensity: 0.4 });
+      const wireframeMaterial = new THREE.MeshBasicMaterial({ color: 0xD5FF65, wireframe: true });
+      const pointsMaterial = new THREE.PointsMaterial({ color: 0xD5FF65, size: 3.5, sizeAttenuation: false });
+      const edgeLineMaterial = new THREE.LineBasicMaterial({ color: 0x3d4752, transparent: true, opacity: 0.7 });
+      const accentLineMaterial = new THREE.LineBasicMaterial({ color: 0xD5FF65, transparent: true, opacity: 0.9 });
 
-      // Material for Points Mode (Photogrammetry Point Cloud scan aesthetic)
-      const pointsMaterial = new THREE.PointsMaterial({
-        color: 0xD5FF65,
-        size: 3.5,
-        sizeAttenuation: false,
-      });
+      const demoPointsVertices = [];
 
-      // Edge outline material for crisp architectural drafting feel in solid mode
-      const edgeLineMaterial = new THREE.LineBasicMaterial({
-        color: 0x3d4752,
-        transparent: true,
-        opacity: 0.7,
-      });
-
-      const accentLineMaterial = new THREE.LineBasicMaterial({
-        color: 0xD5FF65,
-        transparent: true,
-        opacity: 0.9,
-      });
-
-      // Collect point cloud positions
-      const allPointsVertices = [];
-
-      // Helper function to build architectural parts
-      const addArchitecturalPart = (geometry, material, pos, rot, isAccent = false) => {
-        // Solid Mesh
+      const addDemoPart = (geometry, material, pos, rot, isAccent = false) => {
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.copy(pos);
         if (rot) mesh.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
-        solidGroup.add(mesh);
+        demoSolidGroup.add(mesh);
 
-        // Subtle architectural edge lines
         const edgesGeom = new THREE.EdgesGeometry(geometry, 25);
-        const edgeLines = new THREE.LineSegments(
-          edgesGeom,
-          isAccent ? accentLineMaterial : edgeLineMaterial
-        );
+        const edgeLines = new THREE.LineSegments(edgesGeom, isAccent ? accentLineMaterial : edgeLineMaterial);
         edgeLines.position.copy(pos);
         if (rot) edgeLines.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
-        solidGroup.add(edgeLines);
+        demoSolidGroup.add(edgeLines);
 
-        // Wireframe part
         const wireMesh = new THREE.Mesh(geometry, wireframeMaterial);
         wireMesh.position.copy(pos);
         if (rot) wireMesh.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
-        wireframeGroup.add(wireMesh);
+        demoWireGroup.add(wireMesh);
 
-        // Extract vertices for Point Cloud mode
         const posAttr = geometry.attributes.position;
         const matrix = new THREE.Matrix4();
         if (rot) matrix.makeRotationFromEuler(new THREE.Euler(rot.x || 0, rot.y || 0, rot.z || 0));
@@ -228,96 +238,28 @@ export default function Viewport3D() {
         for (let i = 0; i < posAttr.count; i++) {
           const v = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
           v.applyMatrix4(matrix);
-          allPointsVertices.push(v.x, v.y, v.z);
+          demoPointsVertices.push(v.x, v.y, v.z);
         }
       };
 
-      // Part A: Ground Plinth Foundation
-      addArchitecturalPart(
-        new THREE.BoxGeometry(3.8, 0.22, 3.8),
-        baseMaterial,
-        new THREE.Vector3(0, 0.11, 0)
-      );
-
-      // Part B: Second Tier Step
-      addArchitecturalPart(
-        new THREE.BoxGeometry(3.2, 0.16, 3.2),
-        baseMaterial,
-        new THREE.Vector3(0, 0.3, 0)
-      );
-
-      // Part C: Main Sanctuary Core Block
-      addArchitecturalPart(
-        new THREE.BoxGeometry(1.9, 1.4, 1.9),
-        baseMaterial,
-        new THREE.Vector3(0, 1.08, 0)
-      );
-
-      // Part D: 4 Corner Architectural Columns
-      const columnOffsets = [
-        { x: -1.25, z: -1.25 },
-        { x: 1.25, z: -1.25 },
-        { x: -1.25, z: 1.25 },
-        { x: 1.25, z: 1.25 },
-      ];
-      columnOffsets.forEach((col) => {
-        addArchitecturalPart(
-          new THREE.CylinderGeometry(0.1, 0.13, 1.4, 12),
-          columnMaterial,
-          new THREE.Vector3(col.x, 1.08, col.z)
-        );
+      addDemoPart(new THREE.BoxGeometry(3.8, 0.22, 3.8), baseMaterial, new THREE.Vector3(0, 0.11, 0));
+      addDemoPart(new THREE.BoxGeometry(3.2, 0.16, 3.2), baseMaterial, new THREE.Vector3(0, 0.3, 0));
+      addDemoPart(new THREE.BoxGeometry(1.9, 1.4, 1.9), baseMaterial, new THREE.Vector3(0, 1.08, 0));
+      [-1.25, 1.25].forEach((x) => {
+        [-1.25, 1.25].forEach((z) => {
+          addDemoPart(new THREE.CylinderGeometry(0.1, 0.13, 1.4, 12), columnMaterial, new THREE.Vector3(x, 1.08, z));
+        });
       });
+      addDemoPart(new THREE.BoxGeometry(3.0, 0.22, 3.0), baseMaterial, new THREE.Vector3(0, 1.89, 0));
+      addDemoPart(new THREE.ConeGeometry(2.3, 1.1, 4), baseMaterial, new THREE.Vector3(0, 2.55, 0), { y: Math.PI / 4 }, true);
+      addDemoPart(new THREE.CylinderGeometry(0.02, 0.06, 0.45, 8), accentMaterial, new THREE.Vector3(0, 3.25, 0), null, true);
+      addDemoPart(new THREE.SphereGeometry(0.09, 12, 10), accentMaterial, new THREE.Vector3(0, 3.52, 0), null, true);
 
-      // Part E: Entablature / Roof Beam
-      addArchitecturalPart(
-        new THREE.BoxGeometry(3.0, 0.22, 3.0),
-        baseMaterial,
-        new THREE.Vector3(0, 1.89, 0)
-      );
+      const demoPointsGeom = new THREE.BufferGeometry();
+      demoPointsGeom.setAttribute('position', new THREE.Float32BufferAttribute(demoPointsVertices, 3));
+      demoPointsGroup.add(new THREE.Points(demoPointsGeom, pointsMaterial));
 
-      // Part F: Pyramidal Roof
-      addArchitecturalPart(
-        new THREE.ConeGeometry(2.3, 1.1, 4),
-        baseMaterial,
-        new THREE.Vector3(0, 2.55, 0),
-        { y: Math.PI / 4 },
-        true // Electric lime roof edge accent
-      );
-
-      // Part G: Decorative Roof Finial / Aerial Survey Beacon
-      addArchitecturalPart(
-        new THREE.CylinderGeometry(0.02, 0.06, 0.45, 8),
-        accentMaterial,
-        new THREE.Vector3(0, 3.25, 0),
-        null,
-        true
-      );
-      addArchitecturalPart(
-        new THREE.SphereGeometry(0.09, 12, 10),
-        accentMaterial,
-        new THREE.Vector3(0, 3.52, 0),
-        null,
-        true
-      );
-
-      // Build Combined Point Cloud Geometry
-      const pointsGeometry = new THREE.BufferGeometry();
-      pointsGeometry.setAttribute(
-        'position',
-        new THREE.Float32BufferAttribute(allPointsVertices, 3)
-      );
-      const pointsMesh = new THREE.Points(pointsGeometry, pointsMaterial);
-      pointsGroup.add(pointsMesh);
-
-      // Calculate exact actual vertices in the demo object
-      const totalDemoVertices = allPointsVertices.length / 3;
-
-      // Initial visibility based on renderMode
-      solidGroup.visible = true;
-      wireframeGroup.visible = false;
-      pointsGroup.visible = false;
-
-      // 8. Resize Observer
+      // 10. Resize Observer
       resizeObserver = new ResizeObserver((entries) => {
         if (!entries || entries.length === 0 || isDisposed) return;
         const entry = entries[0];
@@ -332,7 +274,7 @@ export default function Viewport3D() {
       });
       resizeObserver.observe(container);
 
-      // 9. Animation & Measured Runtime Telemetry Loop
+      // 11. Measured Runtime Telemetry & Render Loop
       let frameCount = 0;
       let lastTime = performance.now();
 
@@ -340,20 +282,28 @@ export default function Viewport3D() {
         if (isDisposed) return;
         animationFrameId = requestAnimationFrame(animate);
 
-        // Update controls with damping
         controls.update();
-
-        // Render actual scene
         renderer.render(scene, camera);
 
-        // Measure live runtime FPS (averaged over 500ms intervals)
         const now = performance.now();
         frameCount++;
         if (now - lastTime >= 500) {
           const calculatedFps = Math.round((frameCount * 1000) / (now - lastTime));
+
+          // Compute active vertex count accurately
+          let activeVertexCount = 0;
+          if (loadedModelGroup.visible && loadedModelGroup.children.length > 0) {
+            const firstMesh = loadedSolidGroup.children[0] || loadedPointsGroup.children[0];
+            if (firstMesh && firstMesh.geometry && firstMesh.geometry.attributes.position) {
+              activeVertexCount = firstMesh.geometry.attributes.position.count;
+            }
+          } else {
+            activeVertexCount = demoPointsVertices.length / 3;
+          }
+
           setLiveMetrics({
             fps: calculatedFps,
-            vertices: totalDemoVertices,
+            vertices: activeVertexCount,
             triangles: renderer.info.render.triangles,
             drawCalls: renderer.info.render.calls,
             webglVersion,
@@ -369,15 +319,12 @@ export default function Viewport3D() {
       setWebglError(err.message || 'WebGL context could not be created.');
     }
 
-    // 10. Strict Cleanup on Unmount
+    // Strict Cleanup
     return () => {
       isDisposed = true;
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
       if (resizeObserver) resizeObserver.disconnect();
-
-      if (controlsRef.current) {
-        controlsRef.current.dispose();
-      }
+      if (controlsRef.current) controlsRef.current.dispose();
 
       if (sceneRef.current) {
         sceneRef.current.traverse((obj) => {
@@ -402,24 +349,25 @@ export default function Viewport3D() {
   }, []);
 
   // --------------------------------------------------------------------------
-  // Reactive Control Handlers (Solid, Wireframe, Points)
+  // Reactive Display Modes (Shaded, Wireframe, Points)
   // --------------------------------------------------------------------------
   useEffect(() => {
-    const groups = objectGroupsRef.current;
-    if (!groups.solid || !groups.wireframe || !groups.points) return;
+    // 1. Update Demo Pavilion Visibility
+    if (demoPavilionGroupRef.current) {
+      const [solid, wire, points] = demoPavilionGroupRef.current.children;
+      if (solid && wire && points) {
+        solid.visible = renderMode === 'shaded';
+        wire.visible = renderMode === 'wireframe';
+        points.visible = renderMode === 'points';
+      }
+    }
 
-    if (renderMode === 'shaded') {
-      groups.solid.visible = true;
-      groups.wireframe.visible = false;
-      groups.points.visible = false;
-    } else if (renderMode === 'wireframe') {
-      groups.solid.visible = false;
-      groups.wireframe.visible = true;
-      groups.points.visible = false;
-    } else if (renderMode === 'points') {
-      groups.solid.visible = false;
-      groups.wireframe.visible = false;
-      groups.points.visible = true;
+    // 2. Update Loaded PLY Model Visibility
+    const loadedSubs = loadedSubGroupsRef.current;
+    if (loadedSubs.solid && loadedSubs.wireframe && loadedSubs.points) {
+      loadedSubs.solid.visible = renderMode === 'shaded';
+      loadedSubs.wireframe.visible = renderMode === 'wireframe';
+      loadedSubs.points.visible = renderMode === 'points';
     }
   }, [renderMode]);
 
@@ -429,11 +377,10 @@ export default function Viewport3D() {
     if (!lights.ambient || !lights.main) return;
 
     if (lightingMode === 'studio') {
-      lights.ambient.intensity = 0.7;
+      lights.ambient.intensity = 0.75;
       lights.main.intensity = 1.3;
       if (lights.fill) lights.fill.intensity = 0.5;
     } else {
-      // Flat lighting mode (uniform illumination)
       lights.ambient.intensity = 1.6;
       lights.main.intensity = 0.2;
       if (lights.fill) lights.fill.intensity = 0.2;
@@ -460,16 +407,268 @@ export default function Viewport3D() {
     }
   }, [interactionMode]);
 
-  // Camera Reset Handler
+  // --------------------------------------------------------------------------
+  // Local PLY File Loading, Validation, and Scene Integration
+  // --------------------------------------------------------------------------
+  const triggerFilePicker = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''; // Reset input to allow re-selecting same file if needed
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Reset error & start indeterminate loader
+    setPlyError(null);
+    setPlyLoadingName(file.name);
+    setIsLoadingPly(true);
+
+    const requestId = ++loadRequestIdRef.current;
+
+    const reader = new FileReader();
+
+    reader.onerror = () => {
+      if (requestId !== loadRequestIdRef.current) return;
+      setIsLoadingPly(false);
+      setPlyError(`Failed to read file "${file.name}": ${reader.error?.message || 'Access error'}`);
+    };
+
+    reader.onload = (event) => {
+      if (requestId !== loadRequestIdRef.current) return;
+
+      try {
+        const buffer = event.target?.result;
+        if (!buffer || buffer.byteLength === 0) {
+          setIsLoadingPly(false);
+          setPlyError(`The selected file "${file.name}" is completely empty.`);
+          return;
+        }
+
+        processPlyBuffer(buffer, file.name, file.size, requestId);
+      } catch (err) {
+        if (requestId !== loadRequestIdRef.current) return;
+        setIsLoadingPly(false);
+        setPlyError(`Failed to load "${file.name}": ${err.message || 'Unknown error'}`);
+      }
+    };
+
+    reader.readAsArrayBuffer(file);
+  };
+
+  const processPlyBuffer = (buffer, fileName, fileSize, requestId) => {
+    const loader = new PLYLoader();
+    let geometry;
+
+    try {
+      geometry = loader.parse(buffer);
+    } catch (parseErr) {
+      if (requestId !== loadRequestIdRef.current) return;
+      setIsLoadingPly(false);
+      setPlyError(`PLY parser error on "${fileName}": ${parseErr.message || 'Invalid PLY header or format'}`);
+      return;
+    }
+
+    if (requestId !== loadRequestIdRef.current) return;
+
+    if (!geometry) {
+      setIsLoadingPly(false);
+      setPlyError(`Parser did not produce a valid geometry for "${fileName}".`);
+      return;
+    }
+
+    // Validation 1: Non-empty position attribute
+    const positionAttr = geometry.attributes.position;
+    if (!positionAttr || positionAttr.count === 0) {
+      setIsLoadingPly(false);
+      setPlyError(`Invalid PLY model: "${fileName}" contains no 3D vertices.`);
+      return;
+    }
+
+    // Validation 2: Check for finite coordinates
+    const posArray = positionAttr.array;
+    const checkSamples = Math.min(posArray.length, 3000);
+    let allFinite = true;
+    for (let i = 0; i < checkSamples; i++) {
+      if (!Number.isFinite(posArray[i])) {
+        allFinite = false;
+        break;
+      }
+    }
+    if (!allFinite) {
+      setIsLoadingPly(false);
+      setPlyError(`Corrupt PLY: "${fileName}" contains NaN or Infinite coordinates.`);
+      return;
+    }
+
+    // Validation 3: Indexed vs Non-indexed geometry
+    const isIndexed = !!geometry.index;
+    const vertexCount = positionAttr.count;
+    let faceCount = 0;
+    if (isIndexed) {
+      faceCount = Math.floor(geometry.index.count / 3);
+    } else if (faceCount === 0 && vertexCount >= 3) {
+      faceCount = Math.floor(vertexCount / 3);
+    }
+
+    // Validation 4: Detect vertex colors (common in OpenMVS / COLMAP PLYs)
+    const hasVertexColors = !!(geometry.attributes.color && geometry.attributes.color.count > 0);
+
+    // Validation 5: Compute vertex normals if missing and geometry has faces
+    if (!geometry.attributes.normal && faceCount > 0) {
+      try {
+        geometry.computeVertexNormals();
+      } catch (normErr) {
+        console.warn('Could not compute normals for PLY geometry:', normErr);
+      }
+    }
+
+    // Center geometry around origin and compute bounds
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    geometry.center();
+
+    // ------------------------------------------------------------------------
+    // Scene Integration: Replace Demo Model with Loaded PLY
+    // ------------------------------------------------------------------------
+    const loadedSubs = loadedSubGroupsRef.current;
+    if (!loadedSubs.solid || !loadedSubs.wireframe || !loadedSubs.points) return;
+
+    // Dispose previous loaded model geometries and materials
+    disposeGroup(loadedSubs.solid);
+    disposeGroup(loadedSubs.wireframe);
+    disposeGroup(loadedSubs.points);
+
+    // Solid Shaded Mesh
+    const solidMaterial = new THREE.MeshStandardMaterial({
+      color: hasVertexColors ? 0xffffff : 0x8a9ba8,
+      vertexColors: hasVertexColors,
+      roughness: 0.65,
+      metalness: 0.15,
+      side: THREE.DoubleSide,
+    });
+    const solidMesh = new THREE.Mesh(geometry, solidMaterial);
+    loadedSubs.solid.add(solidMesh);
+
+    // Wireframe Mesh
+    const wireMaterial = new THREE.MeshBasicMaterial({
+      color: 0xD5FF65,
+      wireframe: true,
+      side: THREE.DoubleSide,
+    });
+    const wireMesh = new THREE.Mesh(geometry, wireMaterial);
+    loadedSubs.wireframe.add(wireMesh);
+
+    // Point Cloud Scan
+    const pointMaterial = new THREE.PointsMaterial({
+      size: 3.0,
+      vertexColors: hasVertexColors,
+      color: hasVertexColors ? 0xffffff : 0xD5FF65,
+      sizeAttenuation: false,
+    });
+    const pointsMesh = new THREE.Points(geometry, pointMaterial);
+    loadedSubs.points.add(pointsMesh);
+
+    // Set correct sub-group visibility based on active renderMode
+    loadedSubs.solid.visible = renderMode === 'shaded';
+    loadedSubs.wireframe.visible = renderMode === 'wireframe';
+    loadedSubs.points.visible = renderMode === 'points';
+
+    // Show loaded group and hide demo pavilion
+    if (demoPavilionGroupRef.current) demoPavilionGroupRef.current.visible = false;
+    if (loadedModelGroupRef.current) loadedModelGroupRef.current.visible = true;
+
+    // ------------------------------------------------------------------------
+    // Camera Fitting: Frame Model in Viewport
+    // ------------------------------------------------------------------------
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (camera && controls && geometry.boundingSphere) {
+      const radius = Math.max(geometry.boundingSphere.radius, 0.5);
+      const fovRad = (camera.fov * Math.PI) / 180;
+      let fitDistance = (radius / Math.sin(fovRad / 2)) * 1.35;
+      fitDistance = Math.max(fitDistance, 2.5);
+
+      const targetPos = new THREE.Vector3(0, 0, 0);
+      const camPos = new THREE.Vector3(fitDistance * 0.72, fitDistance * 0.55, fitDistance * 0.82);
+
+      camera.position.copy(camPos);
+      controls.target.copy(targetPos);
+      controls.minDistance = Math.max(fitDistance * 0.05, 0.5);
+      controls.maxDistance = fitDistance * 8.0;
+      controls.update();
+
+      // Store fitted positions as default for reset button
+      defaultCameraPosRef.current.copy(camPos);
+      defaultTargetPosRef.current.copy(targetPos);
+
+      // Adjust ground grid to sit directly beneath model's lowest boundary
+      if (gridHelperRef.current && geometry.boundingBox) {
+        gridHelperRef.current.position.y = geometry.boundingBox.min.y;
+      }
+      if (axesHelperRef.current && geometry.boundingBox) {
+        axesHelperRef.current.position.set(0, geometry.boundingBox.min.y + 0.01, 0);
+      }
+    }
+
+    // Set state
+    setLoadedModel({
+      name: fileName,
+      size: fileSize,
+      vertexCount,
+      faceCount,
+      hasVertexColors,
+      isIndexed,
+    });
+
+    setIsLoadingPly(false);
+    setViewportState('loaded');
+  };
+
+  // Revert to default Demo Pavilion
+  const handleRevertToDemo = () => {
+    if (loadedSubGroupsRef.current.solid) {
+      disposeGroup(loadedSubGroupsRef.current.solid);
+      disposeGroup(loadedSubGroupsRef.current.wireframe);
+      disposeGroup(loadedSubGroupsRef.current.points);
+    }
+    if (loadedModelGroupRef.current) loadedModelGroupRef.current.visible = false;
+    if (demoPavilionGroupRef.current) demoPavilionGroupRef.current.visible = true;
+
+    // Reset camera & grid
+    const defaultPos = new THREE.Vector3(6.5, 4.8, 7.2);
+    const defaultTarget = new THREE.Vector3(0, 1.1, 0);
+    defaultCameraPosRef.current.copy(defaultPos);
+    defaultTargetPosRef.current.copy(defaultTarget);
+
+    if (cameraRef.current && controlsRef.current) {
+      cameraRef.current.position.copy(defaultPos);
+      controlsRef.current.target.copy(defaultTarget);
+      controlsRef.current.minDistance = 1.0;
+      controlsRef.current.maxDistance = 60.0;
+      controlsRef.current.update();
+    }
+
+    if (gridHelperRef.current) gridHelperRef.current.position.y = 0;
+    if (axesHelperRef.current) axesHelperRef.current.position.set(0, 0.01, 0);
+
+    setLoadedModel(null);
+    setPlyError(null);
+  };
+
+  // --------------------------------------------------------------------------
+  // Camera & Toolbar Action Handlers
+  // --------------------------------------------------------------------------
   const handleResetCamera = () => {
     if (cameraRef.current && controlsRef.current) {
-      cameraRef.current.position.copy(INITIAL_CAMERA_POS);
-      controlsRef.current.target.copy(INITIAL_TARGET_POS);
+      cameraRef.current.position.copy(defaultCameraPosRef.current);
+      controlsRef.current.target.copy(defaultTargetPosRef.current);
       controlsRef.current.update();
     }
   };
 
-  // Zoom Step Handler
   const handleZoomStep = () => {
     if (cameraRef.current && controlsRef.current) {
       const dir = new THREE.Vector3().subVectors(controlsRef.current.target, cameraRef.current.position);
@@ -478,7 +677,6 @@ export default function Viewport3D() {
     }
   };
 
-  // Fullscreen Handler
   const handleToggleFullscreen = () => {
     const container = canvasContainerRef.current?.parentElement;
     if (!container) return;
@@ -496,9 +694,18 @@ export default function Viewport3D() {
 
   return (
     <div className="studio-center-area">
-      {/* Interactive UI State Switcher Bar */}
-      <div className="viewport-state-bar" role="toolbar" aria-label="Review UI States">
-        <span className="state-switcher-label">View State:</span>
+      {/* Hidden Native File Input for PLY Loading */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".ply"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
+
+      {/* Interactive UI State & File Loader Control Bar */}
+      <div className="viewport-state-bar" role="toolbar" aria-label="Review UI States and PLY Loading">
+        <span className="state-switcher-label">View:</span>
         <button
           type="button"
           className={`state-pill-btn ${viewportState === 'loaded' ? 'active' : ''}`}
@@ -527,35 +734,92 @@ export default function Viewport3D() {
         >
           Error State
         </button>
+
+        <div className="toolbar-separator" style={{ height: '14px', margin: '0 2px' }} />
+
+        {/* Load Local PLY Button */}
+        <button
+          type="button"
+          className="state-pill-btn accent-btn"
+          onClick={triggerFilePicker}
+          title="Select a local .PLY 3D model file from your computer"
+        >
+          <FolderOpen size={12} />
+          <span>{loadedModel ? 'Change PLY...' : 'Load Local PLY...'}</span>
+        </button>
+
+        {/* Revert to Demo Pavilion if model loaded */}
+        {loadedModel && (
+          <button
+            type="button"
+            className="state-pill-btn"
+            onClick={handleRevertToDemo}
+            title="Revert back to the lightweight demo pavilion"
+          >
+            <span>Revert to Demo</span>
+          </button>
+        )}
       </div>
 
-      {/* Floating Telemetry HUD (Top-Right) — Measured Realtime Three.js Metrics */}
+      {/* Floating Telemetry HUD (Top-Right) — Realtime Measured Three.js Metrics */}
       {viewportState === 'loaded' && !webglError && (
         <div className="viewport-hud-top-right">
           <div className="hud-badge-row">
-            <span className="hud-label-dim">THREE.JS WEBGL VIEWPORT</span>
-            <span className="hud-demo-pill">Demo Geometry</span>
+            <span className="hud-label-dim">
+              {loadedModel ? 'LOCAL PLY MODEL' : 'THREE.JS VIEWPORT'}
+            </span>
+            <span className="hud-demo-pill">
+              {loadedModel ? 'Custom Mesh' : 'Demo Pavilion'}
+            </span>
           </div>
+
+          {loadedModel && (
+            <div className="hud-stat-row" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)', paddingBottom: '3px' }}>
+              <span>File</span>
+              <span className="hud-stat-value" title={loadedModel.name} style={{ maxWidth: '110px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {loadedModel.name}
+              </span>
+            </div>
+          )}
+
           <div className="hud-stat-row">
             <span>Live FPS</span>
             <span className="hud-stat-value accent">{liveMetrics.fps}</span>
           </div>
+
           <div className="hud-stat-row">
-            <span>Vertices (Live)</span>
-            <span className="hud-stat-value">{liveMetrics.vertices.toLocaleString()}</span>
+            <span>Vertices</span>
+            <span className="hud-stat-value">
+              {loadedModel ? loadedModel.vertexCount.toLocaleString() : liveMetrics.vertices.toLocaleString()}
+            </span>
           </div>
+
           <div className="hud-stat-row">
-            <span>Faces (Live)</span>
-            <span className="hud-stat-value">{liveMetrics.triangles.toLocaleString()}</span>
+            <span>Faces</span>
+            <span className="hud-stat-value">
+              {loadedModel ? loadedModel.faceCount.toLocaleString() : liveMetrics.triangles.toLocaleString()}
+            </span>
           </div>
+
+          {loadedModel && (
+            <div className="hud-stat-row">
+              <span>Vertex Colors</span>
+              <span className="hud-stat-value" style={{ color: loadedModel.hasVertexColors ? 'var(--accent)' : 'var(--text-muted)' }}>
+                {loadedModel.hasVertexColors ? 'Detected' : 'None (Neutral)'}
+              </span>
+            </div>
+          )}
+
           <div className="hud-stat-row">
             <span>Draw Calls</span>
             <span className="hud-stat-value">{liveMetrics.drawCalls}</span>
           </div>
+
           <div className="hud-stat-row">
             <span>Renderer</span>
             <span className="hud-stat-value" style={{ fontSize: '9.5px' }}>{liveMetrics.webglVersion}</span>
           </div>
+
           <div className="hud-stat-row">
             <span>Shading Mode</span>
             <span className="hud-stat-value" style={{ textTransform: 'capitalize' }}>{renderMode}</span>
@@ -570,13 +834,53 @@ export default function Viewport3D() {
           ref={canvasContainerRef}
           className="viewport-three-container"
           style={{
-            width: '100%',
-            height: '100%',
-            position: 'absolute',
-            inset: 0,
             display: viewportState === 'loaded' && !webglError ? 'block' : 'none',
           }}
         />
+
+        {/* Indeterminate Loading Indicator while parsing PLY */}
+        {isLoadingPly && (
+          <div className="viewport-state-overlay" style={{ zIndex: 45 }}>
+            <Loader2 size={32} color="var(--accent)" className="animate-spin" style={{ animation: 'spin 1.8s linear infinite' }} />
+            <div>
+              <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                Parsing Local PLY Model
+              </h3>
+              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                Reading &ldquo;{plyLoadingName}&rdquo; into BufferGeometry...
+              </p>
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              Validating position buffers and computing vertex normals
+            </span>
+          </div>
+        )}
+
+        {/* Local PLY Loading Error Alert Overlay */}
+        {plyError && (
+          <div className="viewport-state-overlay" style={{ zIndex: 46, borderColor: 'var(--color-error-dim)' }}>
+            <div className="empty-icon-bubble" style={{ background: 'var(--color-error-dim)', color: 'var(--color-error)' }}>
+              <AlertTriangle size={24} strokeWidth={1.8} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--color-error)', letterSpacing: '-0.01em' }}>
+                PLY Loading Error
+              </h3>
+              <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px', maxWidth: '340px' }}>
+                {plyError}
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              <button type="button" className="btn-primary" onClick={triggerFilePicker}>
+                <FolderOpen size={13} />
+                <span>Select Another PLY File</span>
+              </button>
+              <button type="button" className="btn-secondary" onClick={() => setPlyError(null)}>
+                <span>Dismiss</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* WebGL Context Unavailable Fallback Message */}
         {webglError && (
@@ -598,7 +902,7 @@ export default function Viewport3D() {
           </div>
         )}
 
-        {/* View State: Model Loading / In Progress (Simulated) */}
+        {/* View State: Model Loading / In Progress (Simulated Pipeline) */}
         {viewportState === 'loading' && (
           <div className="viewport-state-overlay">
             <Loader2 size={32} color="var(--accent)" className="animate-spin" style={{ animation: 'spin 2s linear infinite' }} />
@@ -637,13 +941,15 @@ export default function Viewport3D() {
                 No 3D Model Loaded
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                Import a set of drone photographs or open a saved reconstruction project to view 3D geometry.
+                Select a local PLY mesh file or open a saved reconstruction project to view 3D geometry.
               </p>
             </div>
-            <button type="button" className="btn-primary" style={{ marginTop: '6px' }}>
-              <FolderPlus size={13} />
-              <span>Import Image Sequence</span>
-            </button>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+              <button type="button" className="btn-primary" onClick={triggerFilePicker}>
+                <FolderOpen size={13} />
+                <span>Select Local PLY File...</span>
+              </button>
+            </div>
           </div>
         )}
 
@@ -712,7 +1018,7 @@ export default function Viewport3D() {
             type="button"
             className={`tool-btn ${renderMode === 'shaded' ? 'active' : ''}`}
             onClick={() => setRenderMode('shaded')}
-            title="Solid Shaded Mesh with Architectural Edges"
+            title="Solid Shaded Mesh"
           >
             <Layers size={15} />
           </button>
@@ -754,7 +1060,7 @@ export default function Viewport3D() {
             type="button"
             className="tool-btn"
             onClick={handleResetCamera}
-            title="Reset Camera to Default View (7, 5, 7)"
+            title="Reset Camera to Initial Framing"
           >
             <RotateCcw size={15} />
           </button>
