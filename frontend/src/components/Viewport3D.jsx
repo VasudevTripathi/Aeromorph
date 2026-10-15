@@ -25,7 +25,7 @@ export default function Viewport3D() {
     <div className="studio-center-area">
       {/* Interactive UI State Switcher Bar */}
       <div className="viewport-state-bar" role="toolbar" aria-label="Review UI States">
-        <span className="state-switcher-label">View State:</span>
+        <span className="state-switcher-label">UI Preview State:</span>
         <button
           type="button"
           className={`state-pill-btn ${viewportState === 'loaded' ? 'active' : ''}`}
@@ -38,7 +38,7 @@ export default function Viewport3D() {
           className={`state-pill-btn ${viewportState === 'loading' ? 'active' : ''}`}
           onClick={() => setViewportState('loading')}
         >
-          Loading / Processing
+          Processing
         </button>
         <button
           type="button"
@@ -56,23 +56,27 @@ export default function Viewport3D() {
         </button>
       </div>
 
-      {/* Floating Realtime Telemetry HUD (Top-Right) */}
+      {/* Floating Telemetry HUD (Top-Right) — Clearly Marked as Simulated */}
       {viewportState === 'loaded' && (
         <div className="viewport-hud-top-right">
+          <div className="hud-badge-row">
+            <span className="hud-label-dim">PREVIEW TELEMETRY</span>
+            <span className="hud-demo-pill">Simulated</span>
+          </div>
           <div className="hud-stat-row">
             <span>FPS</span>
             <span className="hud-stat-value accent">60.0</span>
           </div>
           <div className="hud-stat-row">
-            <span>Vertices</span>
+            <span>Vertices (Sample)</span>
             <span className="hud-stat-value">3,411,172</span>
           </div>
           <div className="hud-stat-row">
-            <span>Faces</span>
+            <span>Faces (Sample)</span>
             <span className="hud-stat-value">6,818,166</span>
           </div>
           <div className="hud-stat-row">
-            <span>VRAM (Shared)</span>
+            <span>VRAM (Shared Est.)</span>
             <span className="hud-stat-value">340 MB</span>
           </div>
           <div className="hud-stat-row">
@@ -107,12 +111,12 @@ export default function Viewport3D() {
               </defs>
 
               {/* Perspective Ground Grid Lines */}
-              <g stroke="rgba(255, 255, 255, 0.06)" strokeWidth="1">
+              <g stroke="rgba(255, 255, 255, 0.05)" strokeWidth="1">
                 <line x1="100" y1="420" x2="700" y2="420" />
                 <line x1="150" y1="380" x2="650" y2="380" />
                 <line x1="200" y1="350" x2="600" y2="350" />
                 <line x1="250" y1="330" x2="550" y2="330" />
-                {/* Radial lines */}
+                {/* Radial perspective lines */}
                 <line x1="400" y1="300" x2="100" y2="440" />
                 <line x1="400" y1="300" x2="250" y2="440" />
                 <line x1="400" y1="300" x2="400" y2="440" />
@@ -137,11 +141,11 @@ export default function Viewport3D() {
                 <polygon points="480,180 540,150 540,280 480,310" />
                 <polygon points="320,180 260,150 260,280 320,310" />
 
-                {/* Triangulation Edges (OpenMVS Delaunay Aesthetic) */}
-                <line x1="320" y1="180" x2="480" y2="310" strokeOpacity="0.4" />
-                <line x1="480" y1="180" x2="320" y2="310" strokeOpacity="0.4" />
-                <line x1="480" y1="180" x2="540" y2="280" strokeOpacity="0.4" />
-                <line x1="320" y1="180" x2="260" y2="280" strokeOpacity="0.4" />
+                {/* Triangulation Edges (Delaunay Tetrahedralization Aesthetic) */}
+                <line x1="320" y1="180" x2="480" y2="310" strokeOpacity="0.35" />
+                <line x1="480" y1="180" x2="320" y2="310" strokeOpacity="0.35" />
+                <line x1="480" y1="180" x2="540" y2="280" strokeOpacity="0.35" />
+                <line x1="320" y1="180" x2="260" y2="280" strokeOpacity="0.35" />
 
                 {/* Supporting Wings */}
                 <polygon points="260,280 200,260 200,340 260,310" />
@@ -175,28 +179,28 @@ export default function Viewport3D() {
             <div className="axis-gizmo" aria-hidden="true" title="Orientation Gizmo">
               <svg width="44" height="44" viewBox="0 0 60 60">
                 {/* Origin */}
-                <circle cx="30" cy="30" r="3" fill="#ffffff" />
+                <circle cx="30" cy="30" r="2.5" fill="#ffffff" />
                 {/* X axis (Red) */}
-                <line x1="30" y1="30" x2="52" y2="30" stroke="#FF5C5C" strokeWidth="2.5" />
-                <text x="54" y="33" fill="#FF5C5C" fontSize="10" fontFamily="sans-serif" fontWeight="bold">X</text>
+                <line x1="30" y1="30" x2="52" y2="30" stroke="#FF5C5C" strokeWidth="2.2" strokeLinecap="round" />
+                <text x="54" y="33" fill="#FF5C5C" fontSize="9" fontFamily="var(--font-sans)" fontWeight="600">X</text>
                 {/* Y axis (Green) */}
-                <line x1="30" y1="30" x2="30" y2="8" stroke="#67E8A0" strokeWidth="2.5" />
-                <text x="27" y="6" fill="#67E8A0" fontSize="10" fontFamily="sans-serif" fontWeight="bold">Y</text>
+                <line x1="30" y1="30" x2="30" y2="8" stroke="#67E8A0" strokeWidth="2.2" strokeLinecap="round" />
+                <text x="27" y="6" fill="#67E8A0" fontSize="9" fontFamily="var(--font-sans)" fontWeight="600">Y</text>
                 {/* Z axis (Blue / Perspective) */}
-                <line x1="30" y1="30" x2="16" y2="44" stroke="#5CAEFF" strokeWidth="2.5" />
-                <text x="8" y="52" fill="#5CAEFF" fontSize="10" fontFamily="sans-serif" fontWeight="bold">Z</text>
+                <line x1="30" y1="30" x2="16" y2="44" stroke="#5CAEFF" strokeWidth="2.2" strokeLinecap="round" />
+                <text x="8" y="52" fill="#5CAEFF" fontSize="9" fontFamily="var(--font-sans)" fontWeight="600">Z</text>
               </svg>
             </div>
           </>
         )}
 
-        {/* State: Model Loading / In Progress */}
+        {/* State: Model Loading / In Progress (Simulated) */}
         {viewportState === 'loading' && (
           <div className="viewport-state-overlay">
-            <Loader2 size={36} color="var(--accent)" className="animate-spin" style={{ animation: 'spin 2s linear infinite' }} />
+            <Loader2 size={32} color="var(--accent)" className="animate-spin" style={{ animation: 'spin 2s linear infinite' }} />
             <div>
-              <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                Reconstructing Mesh Geometry
+              <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                Reconstructing Mesh Geometry (Simulated)
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
                 OpenMVS Delaunay Tetrahedralization • Step 5 of 6
@@ -208,9 +212,13 @@ export default function Viewport3D() {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', fontSize: '11px', color: 'var(--text-muted)' }}>
-              <span>Delaunay tetrahedras: 42.8M cells</span>
+              <span>Delaunay cells: 42.8M (Simulated)</span>
               <span style={{ color: 'var(--accent)', fontWeight: 600 }}>84%</span>
             </div>
+
+            <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+              Illustrative state — Real pipeline execution connects in future sprint
+            </span>
           </div>
         )}
 
@@ -218,43 +226,43 @@ export default function Viewport3D() {
         {viewportState === 'empty' && (
           <div className="viewport-state-overlay">
             <div className="empty-icon-bubble">
-              <Box size={28} strokeWidth={1.8} />
+              <Box size={24} strokeWidth={1.8} />
             </div>
             <div>
-              <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                No 3D Model In Viewport
+              <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                No 3D Model Loaded
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                Load an existing reconstruction project or import a sequence of drone photographs to generate a new 3D model.
+                Import a set of drone photographs or open a saved reconstruction project to view 3D geometry.
               </p>
             </div>
-            <button type="button" className="btn-primary" style={{ marginTop: '8px' }}>
-              <FolderPlus size={14} />
+            <button type="button" className="btn-primary" style={{ marginTop: '6px' }}>
+              <FolderPlus size={13} />
               <span>Import Image Sequence</span>
             </button>
           </div>
         )}
 
-        {/* State: Pipeline Error */}
+        {/* State: Pipeline Error (Illustrative) */}
         {viewportState === 'error' && (
           <div className="viewport-state-overlay" style={{ borderColor: 'var(--color-error-dim)' }}>
             <div className="empty-icon-bubble" style={{ background: 'var(--color-error-dim)', color: 'var(--color-error)' }}>
-              <AlertTriangle size={28} strokeWidth={1.8} />
+              <AlertTriangle size={24} strokeWidth={1.8} />
             </div>
             <div>
-              <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--color-error)' }}>
-                Reconstruction Halted: Insufficient Visual Overlap
+              <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--color-error)', letterSpacing: '-0.01em' }}>
+                Reconstruction Halted (Sample Error State)
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                COLMAP Feature Matcher was unable to register camera poses for 18 out of 42 images due to low baseline overlap.
+                COLMAP Feature Matcher registered &lt; 30 matching pairs between adjacent viewpoints.
               </p>
             </div>
-            <div style={{ background: 'rgba(0, 0, 0, 0.4)', padding: '8px 12px', borderRadius: 'var(--radius-xs)', fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-              Error code: ERR_COLMAP_MATCH_BELOW_THRESHOLD (matches &lt; 30)
+            <div style={{ background: 'rgba(0, 0, 0, 0.45)', padding: '6px 10px', borderRadius: 'var(--radius-xs)', fontSize: '10.5px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+              Error Code: ERR_COLMAP_MATCH_BELOW_THRESHOLD (Sample)
             </div>
             <button type="button" className="btn-secondary">
-              <RotateCcw size={13} />
-              <span>Retry With Adjusted SIFT Thresholds</span>
+              <RotateCcw size={12} />
+              <span>Reset &amp; Retry Thresholds</span>
             </button>
           </div>
         )}
@@ -264,13 +272,13 @@ export default function Viewport3D() {
       {viewportState === 'loaded' && (
         <nav className="floating-viewer-toolbar glass-toolbar" aria-label="3D Viewport Controls">
           <button type="button" className="tool-btn active" title="Orbit Camera (Left Click + Drag)">
-            <Rotate3d size={16} />
+            <Rotate3d size={15} />
           </button>
           <button type="button" className="tool-btn" title="Pan Camera (Right Click + Drag)">
-            <Move size={16} />
+            <Move size={15} />
           </button>
           <button type="button" className="tool-btn" title="Zoom Camera (Scroll Wheel)">
-            <ZoomIn size={16} />
+            <ZoomIn size={15} />
           </button>
 
           <div className="toolbar-separator" />
@@ -281,7 +289,7 @@ export default function Viewport3D() {
             onClick={() => setRenderMode('shaded')}
             title="Solid Shaded Mesh"
           >
-            <Layers size={16} />
+            <Layers size={15} />
           </button>
           <button
             type="button"
@@ -289,7 +297,7 @@ export default function Viewport3D() {
             onClick={() => setRenderMode('wireframe')}
             title="Wireframe View"
           >
-            <Grid3X3 size={16} />
+            <Grid3X3 size={15} />
           </button>
           <button
             type="button"
@@ -297,7 +305,7 @@ export default function Viewport3D() {
             onClick={() => setRenderMode('points')}
             title="Dense Point Cloud"
           >
-            <Eye size={16} />
+            <Eye size={15} />
           </button>
 
           <div className="toolbar-separator" />
@@ -306,15 +314,15 @@ export default function Viewport3D() {
             type="button"
             className="tool-btn"
             onClick={() => setLightingMode(lightingMode === 'studio' ? 'flat' : 'studio')}
-            title={`Lighting: ${lightingMode}`}
+            title={`Lighting Mode: ${lightingMode}`}
           >
-            <Sun size={16} />
+            <Sun size={15} />
           </button>
           <button type="button" className="tool-btn" title="Reset Viewport Camera">
-            <RotateCcw size={16} />
+            <RotateCcw size={15} />
           </button>
           <button type="button" className="tool-btn" title="Fullscreen Viewport">
-            <Maximize2 size={16} />
+            <Maximize2 size={15} />
           </button>
         </nav>
       )}

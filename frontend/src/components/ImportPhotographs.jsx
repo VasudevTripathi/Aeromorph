@@ -4,18 +4,17 @@ import {
   FolderSearch,
   Image as ImageIcon,
   CheckCircle2,
-  AlertCircle,
   Layers,
   Camera,
-  Info,
   ArrowRight,
-  RotateCcw
+  RotateCcw,
+  Sparkles
 } from 'lucide-react';
 
 export default function ImportPhotographs({ onProceedToStudio }) {
   const [dragActive, setDragActive] = useState(false);
 
-  // Representative realistic drone photographs
+  // Representative realistic drone photographs (Sample Dataset)
   const sampleThumbnails = [
     { id: 1, name: 'DJI_0041.JPG', res: '4000x3000', focal: '24mm eq.', iso: '100', size: '6.4 MB' },
     { id: 2, name: 'DJI_0042.JPG', res: '4000x3000', focal: '24mm eq.', iso: '100', size: '6.5 MB' },
@@ -34,22 +33,25 @@ export default function ImportPhotographs({ onProceedToStudio }) {
       {/* Header Info */}
       <div className="import-header">
         <div>
-          <h2 style={{ fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)' }}>
-            Import Photographs
-          </h2>
-          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-            Provide aerial drone or ground photo sequences. High visual overlap (60–80%) ensures optimal feature triangulation.
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.015em' }}>
+              Import Photographs
+            </h2>
+            <span className="sample-indicator-tag">Mock Ingestion Preview</span>
+          </div>
+          <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '3px' }}>
+            Aerial drone or ground photo sequences. High visual overlap (60–80%) ensures robust feature triangulation.
           </p>
         </div>
 
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button type="button" className="btn-secondary" onClick={() => {}}>
-            <RotateCcw size={13} />
-            <span>Clear Selection</span>
+          <button type="button" className="btn-secondary" onClick={() => {}} title="Reset selection">
+            <RotateCcw size={12} />
+            <span>Reset</span>
           </button>
           <button type="button" className="btn-primary" onClick={onProceedToStudio}>
             <span>Proceed to Studio</span>
-            <ArrowRight size={14} />
+            <ArrowRight size={13} />
           </button>
         </div>
       </div>
@@ -62,20 +64,25 @@ export default function ImportPhotographs({ onProceedToStudio }) {
         onDrop={(e) => { e.preventDefault(); setDragActive(false); }}
       >
         <div className="dropzone-icon-box">
-          <UploadCloud size={28} strokeWidth={1.8} />
+          <UploadCloud size={26} strokeWidth={1.8} />
         </div>
         <div>
           <div className="dropzone-title">
             Drag & drop drone photograph folders or files here
           </div>
-          <div className="dropzone-subtitle" style={{ marginTop: '4px' }}>
+          <div className="dropzone-subtitle" style={{ marginTop: '3px' }}>
             Supports JPG, JPEG, and PNG image sets with EXIF camera calibration metadata
           </div>
         </div>
 
-        <button type="button" className="btn-secondary" style={{ marginTop: '8px' }}>
-          <FolderSearch size={15} />
-          <span>Browse Local Directory...</span>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{ marginTop: '4px' }}
+          title="File dialog ingestion is not active in this design sprint"
+        >
+          <FolderSearch size={14} />
+          <span>Browse Local Directory (Mock)</span>
         </button>
       </div>
 
@@ -83,32 +90,32 @@ export default function ImportPhotographs({ onProceedToStudio }) {
       <div className="validation-bar">
         <div className="validation-tags">
           <div className="val-tag success">
-            <CheckCircle2 size={13} />
-            <span>48 Photographs Detected</span>
+            <CheckCircle2 size={12} />
+            <span>Sample Dataset: 48 Photos</span>
           </div>
           <div className="val-tag">
-            <Camera size={13} />
-            <span>EXIF Metadata Verified (FC3582 / 24mm)</span>
+            <Camera size={12} />
+            <span>Sample EXIF: FC3582 • 24mm eq.</span>
           </div>
           <div className="val-tag">
-            <Layers size={13} />
-            <span>Avg Overlap: ~74% (Optimal)</span>
+            <Layers size={12} />
+            <span>Est. Overlap: ~74% (Optimal)</span>
           </div>
         </div>
 
         <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-          Output target: <code style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>D:\images_colmap\run_01</code>
+          Output path: <code style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>D:\images_colmap\run_01</code>
         </div>
       </div>
 
       {/* Representative Image Thumbnail Placeholders */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Dataset Previews ({sampleThumbnails.length} of 48 shown)
+          <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Sample Previews ({sampleThumbnails.length} of 48 shown)
           </span>
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-            Total size: 312 MB • Average: 12.0 MP
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            Total sample size: 312 MB • Average: 12.0 MP
           </span>
         </div>
 
@@ -116,7 +123,7 @@ export default function ImportPhotographs({ onProceedToStudio }) {
           {sampleThumbnails.map((item, idx) => (
             <div key={item.id} className="image-thumb-card">
               <div className="thumb-preview-placeholder">
-                <ImageIcon size={28} strokeWidth={1.2} />
+                <ImageIcon size={26} strokeWidth={1.2} />
                 <span className="thumb-index-tag">#{idx + 1}</span>
               </div>
               <div className="thumb-details">

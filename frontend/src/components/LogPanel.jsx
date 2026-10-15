@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Terminal, ChevronUp, ChevronDown, Copy, Trash2, Filter } from 'lucide-react';
+import { Terminal, ChevronUp, ChevronDown } from 'lucide-react';
 
 export default function LogPanel() {
   const [isExpanded, setIsExpanded] = useState(true);
@@ -27,7 +27,7 @@ export default function LogPanel() {
   return (
     <div
       className="bottom-log-panel"
-      style={{ height: isExpanded ? '190px' : '36px' }}
+      style={{ height: isExpanded ? '180px' : '34px' }}
       aria-label="Processing Status & Logs"
     >
       {/* Header bar / Click to Toggle */}
@@ -36,10 +36,10 @@ export default function LogPanel() {
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="log-panel-title-group">
-          <Terminal size={14} color="var(--accent)" />
-          <span className="log-panel-title">Console & Pipeline Output</span>
+          <Terminal size={13} color="var(--accent)" />
+          <span className="log-panel-title">Console &amp; Output</span>
           <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-            [OpenMVS ReconstructMesh: 100% Complete]
+            [Sample ReconstructMesh Log • 100% Finished]
           </span>
         </div>
 
@@ -69,11 +69,11 @@ export default function LogPanel() {
           <button
             type="button"
             className="btn-ghost"
-            style={{ padding: '3px', marginLeft: '6px' }}
+            style={{ padding: '2px', marginLeft: '4px' }}
             onClick={() => setIsExpanded(!isExpanded)}
             title={isExpanded ? 'Collapse Console' : 'Expand Console'}
           >
-            {isExpanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            {isExpanded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
           </button>
         </div>
       </div>

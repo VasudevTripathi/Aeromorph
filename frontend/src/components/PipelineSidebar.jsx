@@ -1,15 +1,5 @@
 import React from 'react';
-import {
-  CheckCircle,
-  Clock,
-  Play,
-  Settings2,
-  Sliders,
-  Cpu,
-  Layers,
-  ChevronDown,
-  Info
-} from 'lucide-react';
+import { Settings2, Play } from 'lucide-react';
 
 export default function PipelineSidebar({ activeStage, onSelectStage }) {
   const stages = [
@@ -66,9 +56,12 @@ export default function PipelineSidebar({ activeStage, onSelectStage }) {
   return (
     <aside className="pipeline-sidebar" aria-label="Pipeline Stages">
       <div className="sidebar-header">
-        <span className="sidebar-title">Reconstruction Pipeline</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+          <span className="sidebar-title">Pipeline Stages</span>
+          <span className="sidebar-sample-pill">Profile</span>
+        </div>
         <button type="button" className="btn-ghost" title="Pipeline parameters">
-          <Settings2 size={14} />
+          <Settings2 size={13} />
         </button>
       </div>
 
@@ -76,7 +69,6 @@ export default function PipelineSidebar({ activeStage, onSelectStage }) {
       <div className="stages-list">
         {stages.map((stage) => {
           const isCompleted = stage.status === 'done';
-          const isPending = stage.status === 'pending';
 
           return (
             <div
@@ -89,7 +81,7 @@ export default function PipelineSidebar({ activeStage, onSelectStage }) {
                   <span className="stage-title">{stage.name}</span>
                 </div>
                 <span className={`stage-badge ${stage.status}`}>
-                  {isCompleted ? 'Ready' : 'Pending'}
+                  {isCompleted ? 'Sample Ready' : 'Pending'}
                 </span>
               </div>
               <div className="stage-detail">
@@ -100,27 +92,27 @@ export default function PipelineSidebar({ activeStage, onSelectStage }) {
         })}
       </div>
 
-      {/* Sidebar Footer with Execution Summary */}
+      {/* Sidebar Footer with Execution Profile Summary */}
       <div className="sidebar-footer">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '11px', color: 'var(--text-muted)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px', color: 'var(--text-muted)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>Concurrency</span>
+            <span>Target Concurrency</span>
             <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>4 CPU Threads</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>Memory Limit</span>
-            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>6.0 GB Cap (8 GB Total)</span>
+            <span>Target RAM Cap</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>6.0 GB (8 GB Host)</span>
           </div>
         </div>
 
         <button
           type="button"
           className="btn-primary"
-          style={{ width: '100%', marginTop: '4px' }}
-          title="Backend execution will be connected in Sprint 2"
+          style={{ width: '100%', marginTop: '3px' }}
+          title="Backend execution connects in future sprint"
         >
-          <Play size={14} fill="currentColor" />
-          <span>Re-run Pipeline</span>
+          <Play size={13} fill="currentColor" />
+          <span>Run Pipeline (Visual Demo)</span>
         </button>
       </div>
     </aside>
