@@ -74,31 +74,10 @@ config.local.yaml
 config.local.yml
 
 # ==============================================================================
-# Generated 3D Reconstruction Data & Heavy Assets
-# (Keep datasets, point clouds, meshes, and intermediate outputs outside Git)
+# Reconstruction Workspaces, Datasets & Generated Outputs
+# (Prefer directory-based ignores so intentional test fixtures and source
+# assets elsewhere in the project are not accidentally hidden)
 # ==============================================================================
-# Common 3D formats, point clouds, and meshes
-*.ply
-*.obj
-*.mtl
-*.stl
-*.glb
-*.gltf
-*.fbx
-*.mvs
-*.dmap
-*.depth
-*.bin
-
-# SQLite & Database files
-*.db
-*.sqlite
-*.sqlite3
-*.db-journal
-*.db-wal
-*.db-shm
-
-# Reconstruction pipeline folders & caches
 data/
 datasets/
 outputs/
@@ -110,6 +89,15 @@ sparse/
 dense/
 openmvs/
 images_colmap/
+storage/
+
+# Specific default reconstruction database and pipeline intermediate files
+database.db
+scene_dense.*
+scene_mesh.*
+scene_textured.*
+outputs/*.mvs
+outputs/*.dmap
 
 # ==============================================================================
 # Logs & Temporary Files
