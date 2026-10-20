@@ -20,9 +20,17 @@ const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('-
 
 // Bounded memory threshold for 8 GB RAM target profile (Intel integrated graphics).
 // Configurable via AEROMORPH_MAX_PLY_MB environment variable; defaults to 100 MB.
-const parsedLimitMb = parseInt(process.env.AEROMORPH_MAX_PLY_MB, 10);
+// Enforces a strict upper ceiling of 1000 MB (1 GB) to prevent process crash or V8/WebGL exhaustion.
+// Invalid, non-numeric, zero, negative, or excessively large values safely fall back to 100 MB.
 const DEFAULT_MAX_PLY_MB = 100;
-const MAX_PLY_MB = Number.isFinite(parsedLimitMb) && parsedLimitMb > 0 ? parsedLimitMb : DEFAULT_MAX_PLY_MB;
+const MAX_ALLOWED_PLY_MB = 1000;
+
+const rawEnvLimit = process.env.AEROMORPH_MAX_PLY_MB;
+const parsedLimitMb = rawEnvLimit && /^\d+$/.test(rawEnvLimit.trim()) ? parseInt(rawEnvLimit.trim(), 10) : NaN;
+const MAX_PLY_MB =
+  Number.isInteger(parsedLimitMb) && parsedLimitMb > 0 && parsedLimitMb <= MAX_ALLOWED_PLY_MB
+    ? parsedLimitMb
+    : DEFAULT_MAX_PLY_MB;
 const MAX_PLY_BYTES = MAX_PLY_MB * 1024 * 1024;
 
 // Helper to produce a canonical, OS-appropriate key for authorization allowlist
@@ -251,7 +259,7 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
     if (lstat.size > MAX_PLY_BYTES) {
       return {
         canceled: true,
-        error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB for this hardware profile (Selected file: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). To proceed, please decimate the mesh in CloudCompare or MeshLab to under ${MAX_PLY_MB} MB before importing, or set AEROMORPH_MAX_PLY_MB to override.`,
+        error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB for this hardware profile (Selected file: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). To proceed, please decimate the mesh in CloudCompare or MeshLab to under ${MAX_PLY_MB} MB before importing, or set AEROMORPH_MAX_PLY_MB to override (up to ${MAX_ALLOWED_PLY_MB} MB).`,
       };
     }
 
@@ -313,7 +321,7 @@ ipcMain.handle('file:readPlyBuffer', async (event, filePath) => {
     if (lstat.size > MAX_PLY_BYTES) {
       return {
         success: false,
-        error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB (File size: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). Please decimate the mesh in CloudCompare or MeshLab before importing, or set AEROMORPH_MAX_PLY_MB to override.`,
+        error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB (File size: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). Please decimate the mesh in CloudCompare or MeshLab before importing, or set AEROMORPH_MAX_PLY_MB to override (up to ${MAX_ALLOWED_PLY_MB} MB).`,
       };
     }
 
