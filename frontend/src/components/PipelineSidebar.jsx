@@ -1,7 +1,7 @@
 import React from 'react';
-import { Settings2, Play } from 'lucide-react';
+import { Settings2, Play, Box } from 'lucide-react';
 
-export default function PipelineSidebar({ activeStage, onSelectStage }) {
+export default function PipelineSidebar({ activeStage, onSelectStage, currentProject = null }) {
   const stages = [
     {
       id: 'feature_extraction',
@@ -63,6 +63,19 @@ export default function PipelineSidebar({ activeStage, onSelectStage }) {
         <button type="button" className="btn-ghost" title="Pipeline parameters">
           <Settings2 size={13} />
         </button>
+      </div>
+
+      {/* Active Project Indicator in Sidebar */}
+      <div className="sidebar-project-indicator">
+        <Box size={13} color="var(--accent)" />
+        <div className="sidebar-project-text">
+          <span className="sidebar-project-label">
+            {currentProject ? 'ACTIVE PROJECT' : 'WORKSPACE'}
+          </span>
+          <span className="sidebar-project-name" title={currentProject ? currentProject.name : 'Default Pavilion Demo'}>
+            {currentProject ? currentProject.name : 'Default Pavilion Demo'}
+          </span>
+        </div>
       </div>
 
       {/* Stage list */}

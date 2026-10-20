@@ -1,52 +1,171 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import ProjectsHome from './components/ProjectsHome';
 import ImportPhotographs from './components/ImportPhotographs';
 import ReconstructionStudio from './components/ReconstructionStudio';
+import CreateProjectModal from './components/CreateProjectModal';
+import {
+  getStoredProjects,
+  getActiveProjectId,
+  setActiveProjectId as persistActiveProjectId,
+  deleteProject as deleteProjectRecord,
+  setProjectSourceImages,
+  setProjectModelFile,
+  getSessionAssets,
+} from './services/projectService';
 import './App.css';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState('home'); // 'home' | 'import' | 'studio'
+  const [projects, setProjects] = useState([]);
+  const [activeProjectId, setActiveProjectId] = useState(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
-  const handleNewReconstruction = () => {
-    setCurrentScreen('import');
+  // Re-render trigger when in-memory session assets are modified
+  const [sessionTick, setSessionTick] = useState(0);
+
+  // Initialize projects and active project on mount
+  useEffect(() => {
+    const loadedProjects = getStoredProjects();
+    setProjects(loadedProjects);
+
+    const savedActiveId = getActiveProjectId();
+    if (savedActiveId && loadedProjects.some((p) => p.id === savedActiveId)) {
+      setActiveProjectId(savedActiveId);
+    } else if (loadedProjects.length > 0) {
+      setActiveProjectId(loadedProjects[0].id);
+      persistActiveProjectId(loadedProjects[0].id);
+    }
+  }, []);
+
+  // Compute active project
+  const currentProject = projects.find((p) => p.id === activeProjectId) || null;
+
+  // Retrieve current in-memory session assets for active project
+  const { modelFile: sessionModelFile, imageFiles: sessionImages } = getSessionAssets(activeProjectId);
+
+  // Navigation & Project Handlers
+  const handleOpenCreateModal = () => {
+    setIsCreateModalOpen(true);
   };
 
-  const handleOpenProject = (projectId) => {
-    setCurrentScreen('studio');
+  const handleProjectCreated = (newProject, openDirectlyInStudio = false) => {
+    const updated = getStoredProjects();
+    setProjects(updated);
+    setActiveProjectId(newProject.id);
+    persistActiveProjectId(newProject.id);
+    setSessionTick((t) => t + 1);
+
+    if (openDirectlyInStudio || newProject.modelFileReference) {
+      setCurrentScreen('studio');
+    } else {
+      setCurrentScreen('import');
+    }
+  };
+
+  const handleOpenProject = (projectId, destinationScreen = 'studio') => {
+    if (projectId) {
+      setActiveProjectId(projectId);
+      persistActiveProjectId(projectId);
+    }
+    setSessionTick((t) => t + 1);
+    setCurrentScreen(destinationScreen);
+  };
+
+  const handleDeleteProject = (projectId) => {
+    const updated = deleteProjectRecord(projectId);
+    setProjects(updated);
+    const nextActive = getActiveProjectId();
+    setActiveProjectId(nextActive);
+    setSessionTick((t) => t + 1);
+  };
+
+  const handleUpdateProjectImages = (projectId, dirName, files) => {
+    const updatedProject = setProjectSourceImages(projectId, dirName, files);
+    if (updatedProject) {
+      setProjects(getStoredProjects());
+      setSessionTick((t) => t + 1);
+    }
+  };
+
+  const handleAttachModelFile = (file) => {
+    if (!activeProjectId) return;
+    const updatedProject = setProjectModelFile(activeProjectId, file);
+    if (updatedProject) {
+      setProjects(getStoredProjects());
+      setSessionTick((t) => t + 1);
+    }
   };
 
   const handleProceedToStudio = () => {
     setCurrentScreen('studio');
   };
 
+  const handleNavigateHome = () => {
+    setCurrentScreen('home');
+  };
+
+  const handleNavigateImport = () => {
+    setCurrentScreen('import');
+  };
+
+  const handleSelectProject = (projectId) => {
+    setActiveProjectId(projectId);
+    persistActiveProjectId(projectId);
+    setSessionTick((t) => t + 1);
+  };
+
   return (
     <div className="app-container">
-      {/* Top Header with Brand & Navigation */}
+      {/* Top Header with Brand, Active Project & Navigation */}
       <Header
         currentScreen={currentScreen}
         setCurrentScreen={setCurrentScreen}
+        currentProject={currentProject}
       />
 
       {/* Main Dynamic Viewport */}
       <main className="app-content" id="main-content">
         {currentScreen === 'home' && (
           <ProjectsHome
-            onNewReconstruction={handleNewReconstruction}
+            projects={projects}
+            activeProjectId={activeProjectId}
+            onNewReconstruction={handleOpenCreateModal}
             onOpenProject={handleOpenProject}
+            onDeleteProject={handleDeleteProject}
           />
         )}
 
         {currentScreen === 'import' && (
           <ImportPhotographs
+            currentProject={currentProject}
+            sessionImages={sessionImages}
+            projects={projects}
+            onUpdateProjectImages={handleUpdateProjectImages}
             onProceedToStudio={handleProceedToStudio}
+            onNavigateHome={handleNavigateHome}
+            onSelectProject={handleSelectProject}
           />
         )}
 
         {currentScreen === 'studio' && (
-          <ReconstructionStudio />
+          <ReconstructionStudio
+            currentProject={currentProject}
+            sessionModelFile={sessionModelFile}
+            onAttachModelFile={handleAttachModelFile}
+            onNavigateHome={handleNavigateHome}
+            onNavigateImport={handleNavigateImport}
+          />
         )}
       </main>
+
+      {/* Project Creation Dialog */}
+      <CreateProjectModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onProjectCreated={handleProjectCreated}
+        existingProjects={projects}
+      />
     </div>
   );
 }

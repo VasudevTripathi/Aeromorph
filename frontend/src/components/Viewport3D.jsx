@@ -21,7 +21,11 @@ import {
   Sparkles
 } from 'lucide-react';
 
-export default function Viewport3D() {
+export default function Viewport3D({
+  currentProject = null,
+  sessionModelFile = null,
+  onAttachModelFile,
+}) {
   // Viewport UI States
   const [viewportState, setViewportState] = useState('loaded'); // 'loaded' | 'loading' | 'empty' | 'error'
   const [renderMode, setRenderMode] = useState('shaded'); // 'shaded' | 'wireframe' | 'points'
@@ -48,6 +52,7 @@ export default function Viewport3D() {
   const canvasContainerRef = useRef(null);
   const fileInputRef = useRef(null);
   const loadRequestIdRef = useRef(0);
+  const autoLoadedFileRef = useRef(null);
 
   // Three.js Core References
   const sceneRef = useRef(null);
@@ -417,8 +422,7 @@ export default function Viewport3D() {
     }
   };
 
-  const handleFileChange = (e) => {
-    const file = e.target.files?.[0];
+  const loadPlyFromFile = (file, isAutoLoad = false) => {
     if (!file) return;
 
     // Reset error & start indeterminate loader
@@ -448,6 +452,10 @@ export default function Viewport3D() {
         }
 
         processPlyBuffer(buffer, file.name, file.size, requestId);
+
+        if (!isAutoLoad && onAttachModelFile) {
+          onAttachModelFile(file);
+        }
       } catch (err) {
         if (requestId !== loadRequestIdRef.current) return;
         setIsLoadingPly(false);
@@ -457,6 +465,23 @@ export default function Viewport3D() {
 
     reader.readAsArrayBuffer(file);
   };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    loadPlyFromFile(file, false);
+  };
+
+  // Automatically load project session model if available and not yet loaded
+  useEffect(() => {
+    if (sessionModelFile && sessionModelFile !== autoLoadedFileRef.current) {
+      autoLoadedFileRef.current = sessionModelFile;
+      loadPlyFromFile(sessionModelFile, true);
+    } else if (!sessionModelFile && autoLoadedFileRef.current) {
+      autoLoadedFileRef.current = null;
+      handleRevertToDemo();
+    }
+  }, [sessionModelFile]);
 
   const processPlyBuffer = (buffer, fileName, fileSize, requestId) => {
     const loader = new PLYLoader();
@@ -748,6 +773,17 @@ export default function Viewport3D() {
           <span>{loadedModel ? 'Change PLY...' : 'Load Local PLY...'}</span>
         </button>
 
+        {/* Notice if metadata model reference exists but File handle is expired upon refresh */}
+        {currentProject?.modelFileReference && !loadedModel && !sessionModelFile && (
+          <span
+            className="state-pill-btn"
+            style={{ color: 'var(--color-warning)', borderColor: 'var(--color-warning-dim)', fontSize: '10.5px' }}
+            title="Model reference is recorded in project history, but browser security resets memory file handles across page reloads. Click 'Load Local PLY...' to re-select."
+          >
+            Ref: {currentProject.modelFileReference.name} (Reload required)
+          </span>
+        )}
+
         {/* Revert to Demo Pavilion if model loaded */}
         {loadedModel && (
           <button
@@ -765,11 +801,11 @@ export default function Viewport3D() {
       {viewportState === 'loaded' && !webglError && (
         <div className="viewport-hud-top-right">
           <div className="hud-badge-row">
-            <span className="hud-label-dim">
-              {loadedModel ? 'LOCAL PLY MODEL' : 'THREE.JS VIEWPORT'}
+            <span className="hud-label-dim" title={currentProject ? currentProject.name : ''}>
+              {currentProject ? currentProject.name.toUpperCase() : (loadedModel ? 'LOCAL PLY MODEL' : 'THREE.JS VIEWPORT')}
             </span>
             <span className="hud-demo-pill">
-              {loadedModel ? 'Custom Mesh' : 'Demo Pavilion'}
+              {loadedModel ? (currentProject ? 'Project Mesh' : 'Custom Mesh') : 'Demo Pavilion'}
             </span>
           </div>
 

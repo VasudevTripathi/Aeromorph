@@ -1,7 +1,7 @@
 import React from 'react';
-import { Layers, ShieldCheck, Cpu } from 'lucide-react';
+import { Layers, ShieldCheck, Cpu, Box } from 'lucide-react';
 
-export default function Header({ currentScreen, setCurrentScreen }) {
+export default function Header({ currentScreen, setCurrentScreen, currentProject = null }) {
   const navItems = [
     { id: 'home', label: 'Projects Home' },
     { id: 'import', label: 'Import Photographs' },
@@ -18,10 +18,22 @@ export default function Header({ currentScreen, setCurrentScreen }) {
         <div className="brand-title-group">
           <div className="brand-name">
             Aeromorph
-            <span className="brand-version">Preview</span>
+            <span className="brand-version">Sprint 5A</span>
           </div>
           <span className="brand-subtitle">3D Reconstruction Studio</span>
         </div>
+
+        {/* Active Project Pill in Header */}
+        {currentProject && (
+          <div
+            className="header-active-project-tag"
+            onClick={() => setCurrentScreen('studio')}
+            title={`Active Project: ${currentProject.name} (Click to open studio)`}
+          >
+            <Box size={12} color="var(--accent)" />
+            <span className="project-title-text">{currentProject.name}</span>
+          </div>
+        )}
       </div>
 
       {/* Primary Navigation Tabs */}
