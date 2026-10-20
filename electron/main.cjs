@@ -18,8 +18,18 @@ if (!gotTheLock) {
 let mainWindow = null;
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
-// Bounded memory threshold for 8 GB RAM target profile (Intel integrated graphics)
-const MAX_PLY_BYTES = 100 * 1024 * 1024; // 100 MB max PLY file size
+// Bounded memory threshold for 8 GB RAM target profile (Intel integrated graphics).
+// Configurable via AEROMORPH_MAX_PLY_MB environment variable; defaults to 100 MB.
+const parsedLimitMb = parseInt(process.env.AEROMORPH_MAX_PLY_MB, 10);
+const DEFAULT_MAX_PLY_MB = 100;
+const MAX_PLY_MB = Number.isFinite(parsedLimitMb) && parsedLimitMb > 0 ? parsedLimitMb : DEFAULT_MAX_PLY_MB;
+const MAX_PLY_BYTES = MAX_PLY_MB * 1024 * 1024;
+
+// Helper to produce a canonical, OS-appropriate key for authorization allowlist
+const toCanonicalPath = (p) => {
+  const normalized = path.normalize(path.resolve(p));
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
 
 // In-memory allowlist of paths explicitly authorized through native user dialogs
 const authorizedPlyPaths = new Set();
@@ -241,7 +251,7 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
     if (lstat.size > MAX_PLY_BYTES) {
       return {
         canceled: true,
-        error: `PLY file exceeds safe memory threshold of 100 MB for this hardware profile (Selected file: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB).`,
+        error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB for this hardware profile (Selected file: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). To proceed, please decimate the mesh in CloudCompare or MeshLab to under ${MAX_PLY_MB} MB before importing, or set AEROMORPH_MAX_PLY_MB to override.`,
       };
     }
 
@@ -249,8 +259,8 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
     const buffer = await fs.promises.readFile(filePath);
     const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 
-    // Register path in authorized allowlist so subsequent session re-reads succeed
-    authorizedPlyPaths.add(filePath);
+    // Register path in authorized allowlist using canonical OS path key
+    authorizedPlyPaths.add(toCanonicalPath(filePath));
 
     return {
       canceled: false,
@@ -269,7 +279,7 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
 /**
  * 4. Read PLY Binary Buffer
  * Restricted: Only permits reading paths explicitly authorized through native dialogs.
- * Enforces extension check, regular file check, symlink rejection, and 100 MB limit.
+ * Enforces extension check, regular file check, symlink rejection, and configurable memory limit.
  */
 ipcMain.handle('file:readPlyBuffer', async (event, filePath) => {
   try {
@@ -278,9 +288,10 @@ ipcMain.handle('file:readPlyBuffer', async (event, filePath) => {
     }
 
     const resolvedPath = path.normalize(path.resolve(filePath.trim()));
+    const canonicalKey = toCanonicalPath(resolvedPath);
 
     // CRITICAL SECURITY CHECK: Reject arbitrary unselected filesystem paths
-    if (!authorizedPlyPaths.has(resolvedPath)) {
+    if (!authorizedPlyPaths.has(canonicalKey)) {
       return {
         success: false,
         error: 'Access denied: File was not authorized through the native dialog. Please select the file via the file dialog.',
@@ -302,7 +313,7 @@ ipcMain.handle('file:readPlyBuffer', async (event, filePath) => {
     if (lstat.size > MAX_PLY_BYTES) {
       return {
         success: false,
-        error: `PLY file exceeds safe memory threshold of 100 MB (File size: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB).`,
+        error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB (File size: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). Please decimate the mesh in CloudCompare or MeshLab before importing, or set AEROMORPH_MAX_PLY_MB to override.`,
       };
     }
 
