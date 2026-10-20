@@ -428,7 +428,23 @@ export default function Viewport3D({
           return;
         }
         if (result.path) {
-          loadPlyFromNativePath(result.path, result.name, result.sizeBytes, false);
+          if (result.buffer) {
+            setPlyError(null);
+            setPlyLoadingName(result.name || result.path);
+            setIsLoadingPly(true);
+            const requestId = ++loadRequestIdRef.current;
+            processPlyBuffer(result.buffer, result.name, result.sizeBytes, requestId);
+            activeLoadedFileRef.current = result.path;
+            if (onAttachNativePly) {
+              onAttachNativePly({
+                path: result.path,
+                name: result.name || 'model.ply',
+                sizeBytes: result.sizeBytes || 0,
+              });
+            }
+          } else {
+            loadPlyFromNativePath(result.path, result.name, result.sizeBytes, false);
+          }
         }
       } catch (err) {
         console.error('Aeromorph Desktop: Native PLY picker error:', err);

@@ -18,6 +18,12 @@ if (!gotTheLock) {
 let mainWindow = null;
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
+// Bounded memory threshold for 8 GB RAM target profile (Intel integrated graphics)
+const MAX_PLY_BYTES = 100 * 1024 * 1024; // 100 MB max PLY file size
+
+// In-memory allowlist of paths explicitly authorized through native user dialogs
+const authorizedPlyPaths = new Set();
+
 /**
  * Create the primary desktop application window
  */
@@ -46,24 +52,36 @@ function createWindow() {
     mainWindow.show();
   });
 
+  // Deny permission requests (no camera, microphone, or geolocation needed)
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(false);
+  });
+
   // Prevent navigation to unapproved external URLs
   mainWindow.webContents.setWindowOpenHandler(() => {
     return { action: 'deny' };
   });
 
-  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+  const isApprovedUrl = (urlStr) => {
     try {
-      const parsed = new URL(navigationUrl);
+      const parsed = new URL(urlStr);
       if (isDev) {
-        if (parsed.origin !== 'http://localhost:3000') {
-          event.preventDefault();
-        }
-      } else {
-        if (parsed.protocol !== 'file:') {
-          event.preventDefault();
-        }
+        return parsed.origin === 'http://localhost:3000';
       }
+      return parsed.protocol === 'file:';
     } catch {
+      return false;
+    }
+  };
+
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isApprovedUrl(navigationUrl)) {
+      event.preventDefault();
+    }
+  });
+
+  mainWindow.webContents.on('will-redirect', (event, navigationUrl) => {
+    if (!isApprovedUrl(navigationUrl)) {
       event.preventDefault();
     }
   });
@@ -80,6 +98,14 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+// Global WebContents hardening
+app.on('web-contents-created', (event, contents) => {
+  contents.on('will-attach-webview', (webviewEvent) => {
+    webviewEvent.preventDefault();
+  });
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
 
 // ------------------------------------------------------------------------------
 // Secure IPC Handlers
@@ -114,30 +140,44 @@ ipcMain.handle('dialog:selectImageDirectory', async () => {
       return { canceled: true };
     }
 
-    const dirPath = result.filePaths[0];
-    const stat = await fs.promises.stat(dirPath);
-    if (!stat.isDirectory()) {
+    const rawPath = result.filePaths[0];
+    if (typeof rawPath !== 'string' || rawPath.includes('\0')) {
+      return { canceled: true, error: 'Invalid directory path.' };
+    }
+
+    const dirPath = path.normalize(path.resolve(rawPath));
+
+    const lstat = await fs.promises.lstat(dirPath);
+    if (lstat.isSymbolicLink()) {
+      return { canceled: true, error: 'Symbolic link directories are not supported for security reasons.' };
+    }
+    if (!lstat.isDirectory()) {
       return { canceled: true, error: 'Selected path is not a directory.' };
     }
 
-    // Shallow non-recursive read of directory entries
+    // Shallow non-recursive read of directory entries (bounded to first 5,000 files to avoid locking thread)
     const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
     const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.bmp']);
 
     const imageFiles = [];
     let totalSizeBytes = 0;
+    const maxEntries = Math.min(entries.length, 5000);
 
-    for (const entry of entries) {
+    for (let i = 0; i < maxEntries; i++) {
+      const entry = entries[i];
       if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
         if (imageExtensions.has(ext)) {
           try {
-            const fileStat = await fs.promises.stat(path.join(dirPath, entry.name));
-            totalSizeBytes += fileStat.size;
-            imageFiles.push({
-              name: entry.name,
-              size: fileStat.size,
-            });
+            const entryPath = path.join(dirPath, entry.name);
+            const fileLstat = await fs.promises.lstat(entryPath);
+            if (!fileLstat.isSymbolicLink()) {
+              totalSizeBytes += fileLstat.size;
+              imageFiles.push({
+                name: entry.name,
+                size: fileLstat.size,
+              });
+            }
           } catch {
             // Skip unreadable files
           }
@@ -162,6 +202,7 @@ ipcMain.handle('dialog:selectImageDirectory', async () => {
 
 /**
  * 3. Native File Picker for Reconstructed PLY Model
+ * Reads the user-selected file directly and registers path in the authorized allowlist.
  */
 ipcMain.handle('dialog:selectPlyFile', async () => {
   if (!mainWindow) return { canceled: true };
@@ -179,22 +220,45 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
       return { canceled: true };
     }
 
-    const filePath = result.filePaths[0];
+    const rawPath = result.filePaths[0];
+    if (typeof rawPath !== 'string' || rawPath.includes('\0')) {
+      return { canceled: true, error: 'Invalid file path.' };
+    }
+
+    const filePath = path.normalize(path.resolve(rawPath));
     if (path.extname(filePath).toLowerCase() !== '.ply') {
       return { canceled: true, error: 'Selected file is not a .ply mesh.' };
     }
 
-    const stat = await fs.promises.stat(filePath);
-    if (!stat.isFile()) {
-      return { canceled: true, error: 'Selected path is not a valid file.' };
+    const lstat = await fs.promises.lstat(filePath);
+    if (lstat.isSymbolicLink()) {
+      return { canceled: true, error: 'Symbolic links are not supported for security reasons.' };
     }
+    if (!lstat.isFile()) {
+      return { canceled: true, error: 'Selected path is not a regular file.' };
+    }
+
+    if (lstat.size > MAX_PLY_BYTES) {
+      return {
+        canceled: true,
+        error: `PLY file exceeds safe memory threshold of 100 MB for this hardware profile (Selected file: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB).`,
+      };
+    }
+
+    // Read buffer directly in main process upon user dialog selection
+    const buffer = await fs.promises.readFile(filePath);
+    const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+
+    // Register path in authorized allowlist so subsequent session re-reads succeed
+    authorizedPlyPaths.add(filePath);
 
     return {
       canceled: false,
       path: filePath,
       name: path.basename(filePath),
-      sizeBytes: stat.size,
-      lastModified: stat.mtimeMs,
+      sizeBytes: lstat.size,
+      lastModified: lstat.mtimeMs,
+      buffer: arrayBuffer,
     };
   } catch (err) {
     console.error('Aeromorph Desktop: Error selecting PLY file:', err);
@@ -204,37 +268,52 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
 
 /**
  * 4. Read PLY Binary Buffer
- * Strictly checks that path exists, has .ply extension, and is within safe memory limits (max 500 MB).
+ * Restricted: Only permits reading paths explicitly authorized through native dialogs.
+ * Enforces extension check, regular file check, symlink rejection, and 100 MB limit.
  */
 ipcMain.handle('file:readPlyBuffer', async (event, filePath) => {
   try {
-    if (typeof filePath !== 'string' || path.extname(filePath).toLowerCase() !== '.ply') {
-      return { success: false, error: 'Path must point to a valid .ply file.' };
+    if (typeof filePath !== 'string' || !filePath.trim() || filePath.includes('\0')) {
+      return { success: false, error: 'Path must be a valid non-empty string.' };
     }
 
-    const stat = await fs.promises.stat(filePath);
-    if (!stat.isFile()) {
-      return { success: false, error: 'Path is not a regular file.' };
-    }
+    const resolvedPath = path.normalize(path.resolve(filePath.trim()));
 
-    // Enforce 500 MB safety limit for 8 GB RAM target machine
-    const MAX_PLY_BYTES = 500 * 1024 * 1024;
-    if (stat.size > MAX_PLY_BYTES) {
+    // CRITICAL SECURITY CHECK: Reject arbitrary unselected filesystem paths
+    if (!authorizedPlyPaths.has(resolvedPath)) {
       return {
         success: false,
-        error: `PLY file exceeds safe memory threshold of 500 MB (File size: ${(stat.size / (1024 * 1024)).toFixed(1)} MB).`,
+        error: 'Access denied: File was not authorized through the native dialog. Please select the file via the file dialog.',
       };
     }
 
-    const buffer = await fs.promises.readFile(filePath);
-    // Convert Node Buffer to isolated ArrayBuffer for Three.js PLYLoader
+    if (path.extname(resolvedPath).toLowerCase() !== '.ply') {
+      return { success: false, error: 'Path must point to a valid .ply file.' };
+    }
+
+    const lstat = await fs.promises.lstat(resolvedPath);
+    if (lstat.isSymbolicLink()) {
+      return { success: false, error: 'Symbolic links are not allowed for security reasons.' };
+    }
+    if (!lstat.isFile()) {
+      return { success: false, error: 'Path is not a regular file.' };
+    }
+
+    if (lstat.size > MAX_PLY_BYTES) {
+      return {
+        success: false,
+        error: `PLY file exceeds safe memory threshold of 100 MB (File size: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB).`,
+      };
+    }
+
+    const buffer = await fs.promises.readFile(resolvedPath);
     const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 
     return {
       success: true,
       buffer: arrayBuffer,
-      sizeBytes: stat.size,
-      name: path.basename(filePath),
+      sizeBytes: lstat.size,
+      name: path.basename(resolvedPath),
     };
   } catch (err) {
     console.error('Aeromorph Desktop: Error reading PLY buffer:', err);
@@ -252,24 +331,28 @@ ipcMain.handle('system:checkExecutablePaths', async (event, { colmapPath, openmv
     openmvs: { exists: false, path: null },
   };
 
-  if (colmapPath && typeof colmapPath === 'string') {
+  const validateBinaryPath = (p) => {
+    if (typeof p !== 'string' || !p.trim() || p.includes('\0')) return null;
+    const resolved = path.normalize(path.resolve(p.trim()));
     try {
-      if (fs.existsSync(colmapPath) && fs.statSync(colmapPath).isFile()) {
-        result.colmap = { exists: true, path: colmapPath };
+      const lstat = fs.lstatSync(resolved);
+      if (!lstat.isSymbolicLink() && lstat.isFile()) {
+        return resolved;
       }
     } catch {
       // Ignored
     }
+    return null;
+  };
+
+  if (colmapPath) {
+    const valid = validateBinaryPath(colmapPath);
+    if (valid) result.colmap = { exists: true, path: valid };
   }
 
-  if (openmvsPath && typeof openmvsPath === 'string') {
-    try {
-      if (fs.existsSync(openmvsPath) && fs.statSync(openmvsPath).isFile()) {
-        result.openmvs = { exists: true, path: openmvsPath };
-      }
-    } catch {
-      // Ignored
-    }
+  if (openmvsPath) {
+    const valid = validateBinaryPath(openmvsPath);
+    if (valid) result.openmvs = { exists: true, path: valid };
   }
 
   return result;

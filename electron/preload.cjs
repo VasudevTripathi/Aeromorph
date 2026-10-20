@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
    * @returns {Promise<{ success: boolean, buffer?: ArrayBuffer, error?: string }>}
    */
   readPlyBuffer: (filePath) => {
-    if (typeof filePath !== 'string' || !filePath.trim()) {
+    if (typeof filePath !== 'string' || !filePath.trim() || filePath.includes('\0')) {
       return Promise.reject(new Error('Invalid file path argument'));
     }
     return ipcRenderer.invoke('file:readPlyBuffer', filePath.trim());

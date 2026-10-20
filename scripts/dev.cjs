@@ -5,7 +5,7 @@
  * before launching the Electron desktop window.
  */
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const path = require('path');
 
@@ -36,8 +36,8 @@ function cleanup() {
 
   if (electronProcess && !electronProcess.killed) {
     try {
-      if (isWindows) {
-        spawn('taskkill', ['/pid', electronProcess.pid, '/f', '/t']);
+      if (isWindows && electronProcess.pid) {
+        spawnSync('taskkill', ['/pid', String(electronProcess.pid), '/f', '/t']);
       } else {
         electronProcess.kill();
       }
@@ -46,8 +46,8 @@ function cleanup() {
 
   if (frontendProcess && !frontendProcess.killed) {
     try {
-      if (isWindows) {
-        spawn('taskkill', ['/pid', frontendProcess.pid, '/f', '/t']);
+      if (isWindows && frontendProcess.pid) {
+        spawnSync('taskkill', ['/pid', String(frontendProcess.pid), '/f', '/t']);
       } else {
         frontendProcess.kill();
       }
