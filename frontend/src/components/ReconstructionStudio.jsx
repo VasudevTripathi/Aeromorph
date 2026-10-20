@@ -8,6 +8,7 @@ export default function ReconstructionStudio({
   currentProject = null,
   sessionModelFile = null,
   onAttachModelFile,
+  onAttachNativePly,
   onNavigateHome,
   onNavigateImport,
 }) {
@@ -96,6 +97,7 @@ export default function ReconstructionStudio({
           currentProject={currentProject}
           sessionModelFile={sessionModelFile}
           onAttachModelFile={onAttachModelFile}
+          onAttachNativePly={onAttachNativePly}
         />
 
         {/* Bottom Collapsible Pipeline Output & Console */}

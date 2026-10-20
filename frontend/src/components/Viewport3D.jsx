@@ -20,11 +20,13 @@ import {
   FileCode,
   Sparkles
 } from 'lucide-react';
+import { isElectron, selectNativePlyFile, loadNativePlyBuffer } from '../services/desktopBridge';
 
 export default function Viewport3D({
   currentProject = null,
   sessionModelFile = null,
   onAttachModelFile,
+  onAttachNativePly,
 }) {
   // Viewport UI States
   const [viewportState, setViewportState] = useState('loaded'); // 'loaded' | 'loading' | 'empty' | 'error'
@@ -416,10 +418,63 @@ export default function Viewport3D({
   // --------------------------------------------------------------------------
   // Local PLY File Loading, Validation, and Scene Integration
   // --------------------------------------------------------------------------
-  const triggerFilePicker = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''; // Reset input to allow re-selecting same file if needed
-      fileInputRef.current.click();
+  const triggerFilePicker = async () => {
+    if (isElectron) {
+      try {
+        const result = await selectNativePlyFile();
+        if (result.canceled) return;
+        if (result.error) {
+          setPlyError(`Native file picker error: ${result.error}`);
+          return;
+        }
+        if (result.path) {
+          loadPlyFromNativePath(result.path, result.name, result.sizeBytes, false);
+        }
+      } catch (err) {
+        console.error('Aeromorph Desktop: Native PLY picker error:', err);
+        setPlyError(`Native dialog error: ${err.message}`);
+      }
+    } else {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''; // Reset input to allow re-selecting same file if needed
+        fileInputRef.current.click();
+      }
+    }
+  };
+
+  const loadPlyFromNativePath = async (filePath, fileName, fileSize, isAutoLoad = false) => {
+    if (!filePath) return;
+
+    setPlyError(null);
+    setPlyLoadingName(fileName || filePath);
+    setIsLoadingPly(true);
+
+    const requestId = ++loadRequestIdRef.current;
+
+    try {
+      const res = await loadNativePlyBuffer(filePath);
+      if (requestId !== loadRequestIdRef.current) return;
+
+      if (!res.success || !res.buffer) {
+        setIsLoadingPly(false);
+        setPlyError(res.error || `Could not read PLY file from "${filePath}".`);
+        return;
+      }
+
+      processPlyBuffer(res.buffer, fileName || res.name || 'model.ply', fileSize || res.sizeBytes || 0, requestId);
+      activeLoadedFileRef.current = filePath;
+
+      if (!isAutoLoad && onAttachNativePly) {
+        onAttachNativePly({
+          path: filePath,
+          name: fileName || res.name || 'model.ply',
+          sizeBytes: fileSize || res.sizeBytes || 0,
+        });
+      }
+    } catch (err) {
+      if (requestId !== loadRequestIdRef.current) return;
+      setIsLoadingPly(false);
+      setPlyError(`Failed to load native PLY from "${filePath}": ${err.message}`);
     }
   };
 
@@ -474,7 +529,7 @@ export default function Viewport3D({
     loadPlyFromFile(file, false);
   };
 
-  // Synchronize 3D model with active project and session model file
+  // Synchronize 3D model with active project, session model file, or desktop path
   useEffect(() => {
     const isProjectSwitched = currentProjectIdRef.current !== currentProject?.id;
     currentProjectIdRef.current = currentProject?.id;
@@ -484,14 +539,25 @@ export default function Viewport3D({
         activeLoadedFileRef.current = sessionModelFile;
         loadPlyFromFile(sessionModelFile, true);
       }
+    } else if (isElectron && currentProject?.modelFileReference?.path) {
+      const nativePath = currentProject.modelFileReference.path;
+      if (activeLoadedFileRef.current !== nativePath || isProjectSwitched) {
+        activeLoadedFileRef.current = nativePath;
+        loadPlyFromNativePath(
+          nativePath,
+          currentProject.modelFileReference.name,
+          currentProject.modelFileReference.sizeBytes,
+          true
+        );
+      }
     } else {
-      // If current project has no session model file, or project switched, ensure demo pavilion is shown
+      // If current project has no session model file or native path, or project switched, ensure demo pavilion is shown
       if (activeLoadedFileRef.current !== null || isProjectSwitched || (demoPavilionGroupRef.current && !demoPavilionGroupRef.current.visible)) {
         activeLoadedFileRef.current = null;
         handleRevertToDemo();
       }
     }
-  }, [currentProject?.id, sessionModelFile]);
+  }, [currentProject?.id, sessionModelFile, currentProject?.modelFileReference?.path]);
 
   const processPlyBuffer = (buffer, fileName, fileSize, requestId) => {
     const loader = new PLYLoader();

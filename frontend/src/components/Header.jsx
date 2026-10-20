@@ -1,5 +1,6 @@
 import React from 'react';
-import { Layers, ShieldCheck, Cpu, Box } from 'lucide-react';
+import { Layers, ShieldCheck, Cpu, Box, Monitor, Globe } from 'lucide-react';
+import { isElectron } from '../services/desktopBridge';
 
 export default function Header({ currentScreen, setCurrentScreen, currentProject = null }) {
   const navItems = [
@@ -18,7 +19,7 @@ export default function Header({ currentScreen, setCurrentScreen, currentProject
         <div className="brand-title-group">
           <div className="brand-name">
             Aeromorph
-            <span className="brand-version">Sprint 5A</span>
+            <span className="brand-version">Sprint 5B</span>
           </div>
           <span className="brand-subtitle">3D Reconstruction Studio</span>
         </div>
@@ -52,15 +53,29 @@ export default function Header({ currentScreen, setCurrentScreen, currentProject
 
       {/* Local Processing & Hardware Profile Badges */}
       <div className="header-status-section">
+        {isElectron ? (
+          <div className="hardware-pill" title="Operating inside secure Electron Windows desktop shell">
+            <span className="status-dot online" style={{ background: 'var(--accent)', boxShadow: '0 0 6px var(--accent)' }} />
+            <Monitor size={12} color="var(--accent)" />
+            <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>Desktop Shell</span>
+          </div>
+        ) : (
+          <div className="hardware-pill" title="Operating inside Web Browser sandbox">
+            <span className="status-dot idle" />
+            <Globe size={12} />
+            <span>Browser Sandbox</span>
+          </div>
+        )}
+
         <div className="hardware-pill" title="Target architecture: Local CPU & Integrated Graphics">
           <span className="status-dot idle" />
           <Cpu size={12} />
           <span>Local CPU / iGPU Profile</span>
         </div>
 
-        <div className="hardware-pill" title="Private local-first processing — no external network requests">
+        <div className="hardware-pill" title="Private local-first processing — zero cloud telemetry">
           <ShieldCheck size={12} color="var(--accent)" />
-          <span>100% Local Processing</span>
+          <span>100% Local</span>
         </div>
       </div>
     </header>

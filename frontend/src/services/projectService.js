@@ -90,13 +90,15 @@ export function getStoredProjects() {
         status: typeof p.status === 'string' ? p.status : 'Created',
         sourceDirectoryReference: (p.sourceDirectoryReference && typeof p.sourceDirectoryReference === 'object') ? {
           name: typeof p.sourceDirectoryReference.name === 'string' ? p.sourceDirectoryReference.name : 'Attached Photographs',
+          path: typeof p.sourceDirectoryReference.path === 'string' ? p.sourceDirectoryReference.path : null,
           fileCount: Number.isFinite(p.sourceDirectoryReference.fileCount) ? p.sourceDirectoryReference.fileCount : 0,
           totalSizeBytes: Number.isFinite(p.sourceDirectoryReference.totalSizeBytes) ? p.sourceDirectoryReference.totalSizeBytes : 0,
-          storageType: 'browser-session',
+          storageType: p.sourceDirectoryReference.storageType === 'desktop-path' ? 'desktop-path' : 'browser-session',
           updatedAt: typeof p.sourceDirectoryReference.updatedAt === 'string' ? p.sourceDirectoryReference.updatedAt : new Date().toISOString(),
         } : null,
         modelFileReference: (p.modelFileReference && typeof p.modelFileReference === 'object') ? {
           name: typeof p.modelFileReference.name === 'string' ? p.modelFileReference.name : 'model.ply',
+          path: typeof p.modelFileReference.path === 'string' ? p.modelFileReference.path : null,
           sizeBytes: Number.isFinite(p.modelFileReference.sizeBytes) ? p.modelFileReference.sizeBytes : 0,
           lastModified: Number.isFinite(p.modelFileReference.lastModified) ? p.modelFileReference.lastModified : null,
           updatedAt: typeof p.modelFileReference.updatedAt === 'string' ? p.modelFileReference.updatedAt : new Date().toISOString(),
@@ -124,15 +126,17 @@ export function saveProjects(projects) {
       sourceDirectoryReference: p.sourceDirectoryReference
         ? {
             name: p.sourceDirectoryReference.name,
+            path: typeof p.sourceDirectoryReference.path === 'string' ? p.sourceDirectoryReference.path : null,
             fileCount: p.sourceDirectoryReference.fileCount || 0,
             totalSizeBytes: p.sourceDirectoryReference.totalSizeBytes || 0,
-            storageType: 'browser-session',
+            storageType: p.sourceDirectoryReference.storageType === 'desktop-path' ? 'desktop-path' : 'browser-session',
             updatedAt: p.sourceDirectoryReference.updatedAt || new Date().toISOString(),
           }
         : null,
       modelFileReference: p.modelFileReference
         ? {
             name: p.modelFileReference.name,
+            path: typeof p.modelFileReference.path === 'string' ? p.modelFileReference.path : null,
             sizeBytes: p.modelFileReference.sizeBytes || 0,
             lastModified: p.modelFileReference.lastModified || null,
             updatedAt: p.modelFileReference.updatedAt || new Date().toISOString(),
@@ -184,7 +188,14 @@ export function setActiveProjectId(projectId) {
  * @param {File|null} [params.modelFile] - Native File handle for PLY model
  * @returns {{ project: Object, error: string | null }}
  */
-export function createProject({ name, sourceDirName = null, imageFiles = [], modelFile = null }) {
+export function createProject({
+  name,
+  sourceDirName = null,
+  imageFiles = [],
+  modelFile = null,
+  nativeDirectory = null,
+  nativePly = null,
+}) {
   const existingProjects = getStoredProjects();
   const validation = validateProjectName(name, existingProjects);
 
@@ -197,15 +208,24 @@ export function createProject({ name, sourceDirName = null, imageFiles = [], mod
 
   // Determine initial status
   let status = 'Created';
-  if (modelFile) {
+  if (modelFile || (nativePly && nativePly.path)) {
     status = 'Model Ready';
-  } else if (imageFiles && imageFiles.length > 0) {
+  } else if ((imageFiles && imageFiles.length > 0) || (nativeDirectory && nativeDirectory.fileCount > 0)) {
     status = 'Photos Ready';
   }
 
-  // Create Source Directory Reference if images were attached
+  // Create Source Directory Reference
   let sourceDirectoryReference = null;
-  if (imageFiles && imageFiles.length > 0) {
+  if (nativeDirectory && nativeDirectory.path) {
+    sourceDirectoryReference = {
+      name: nativeDirectory.name || 'Source Directory',
+      path: nativeDirectory.path,
+      fileCount: nativeDirectory.fileCount || 0,
+      totalSizeBytes: nativeDirectory.totalSizeBytes || 0,
+      storageType: 'desktop-path',
+      updatedAt: now,
+    };
+  } else if (imageFiles && imageFiles.length > 0) {
     const totalSizeBytes = imageFiles.reduce((acc, f) => acc + (f.size || 0), 0);
     sourceDirectoryReference = {
       name: sourceDirName || 'Attached Photographs',
@@ -216,9 +236,17 @@ export function createProject({ name, sourceDirName = null, imageFiles = [], mod
     };
   }
 
-  // Create Model File Reference if PLY was attached
+  // Create Model File Reference
   let modelFileReference = null;
-  if (modelFile) {
+  if (nativePly && nativePly.path) {
+    modelFileReference = {
+      name: nativePly.name || 'model.ply',
+      path: nativePly.path,
+      sizeBytes: nativePly.sizeBytes || 0,
+      lastModified: nativePly.lastModified || null,
+      updatedAt: now,
+    };
+  } else if (modelFile) {
     modelFileReference = {
       name: modelFile.name,
       sizeBytes: modelFile.size,
@@ -237,10 +265,12 @@ export function createProject({ name, sourceDirName = null, imageFiles = [], mod
     modelFileReference,
   };
 
-  // Cache in-memory session File handles
+  // Cache in-memory session File handles and native references
   sessionAssetStore.set(projectId, {
     modelFile: modelFile || null,
     imageFiles: imageFiles || [],
+    nativeDirectory: nativeDirectory || null,
+    nativePly: nativePly || null,
   });
 
   // Persist project metadata
@@ -252,14 +282,92 @@ export function createProject({ name, sourceDirName = null, imageFiles = [], mod
 }
 
 /**
- * Retrieve in-memory session assets (native File objects) for a project
+ * Retrieve in-memory session assets (native File objects or desktop handles) for a project
  * @param {string} projectId
- * @returns {{ modelFile: File|null, imageFiles: File[] }}
+ * @returns {{ modelFile: File|null, imageFiles: File[], nativeDirectory: Object|null, nativePly: Object|null }}
  */
 export function getSessionAssets(projectId) {
-  if (!projectId) return { modelFile: null, imageFiles: [] };
+  if (!projectId) return { modelFile: null, imageFiles: [], nativeDirectory: null, nativePly: null };
   const assets = sessionAssetStore.get(projectId);
-  return assets || { modelFile: null, imageFiles: [] };
+  return assets || { modelFile: null, imageFiles: [], nativeDirectory: null, nativePly: null };
+}
+
+/**
+ * Attach or update a native local directory reference for a project in Electron desktop mode
+ * @param {string} projectId
+ * @param {Object} dirInfo - { path: string, name: string, fileCount: number, totalSizeBytes: number, imageFiles?: Array }
+ * @returns {Object|null} The updated project record
+ */
+export function setProjectNativeDirectory(projectId, { path, name, fileCount = 0, totalSizeBytes = 0, imageFiles = [] } = {}) {
+  if (!projectId || !path) return null;
+
+  const existingAssets = getSessionAssets(projectId);
+  sessionAssetStore.set(projectId, {
+    ...existingAssets,
+    nativeDirectory: { path, name, fileCount, totalSizeBytes, imageFiles },
+  });
+
+  const projects = getStoredProjects();
+  const index = projects.findIndex((p) => p.id === projectId);
+  if (index === -1) return null;
+
+  const now = new Date().toISOString();
+  const updated = {
+    ...projects[index],
+    updatedAt: now,
+    status: projects[index].modelFileReference ? 'Model Ready' : (fileCount > 0 ? 'Photos Ready' : 'Created'),
+    sourceDirectoryReference: {
+      name: name || 'Source Directory',
+      path,
+      fileCount,
+      totalSizeBytes,
+      storageType: 'desktop-path',
+      updatedAt: now,
+    },
+  };
+
+  projects[index] = updated;
+  saveProjects(projects);
+  return updated;
+}
+
+/**
+ * Attach or update a native PLY model file reference for a project in Electron desktop mode
+ * @param {string} projectId
+ * @param {Object} plyInfo - { path: string, name: string, sizeBytes: number, lastModified?: number }
+ * @returns {Object|null} The updated project record
+ */
+export function setProjectNativePly(projectId, { path, name, sizeBytes = 0, lastModified = null } = {}) {
+  if (!projectId || !path) return null;
+
+  const existingAssets = getSessionAssets(projectId);
+  sessionAssetStore.set(projectId, {
+    ...existingAssets,
+    nativePly: { path, name, sizeBytes, lastModified },
+    modelFile: null, // Clear browser File handle if any
+  });
+
+  const projects = getStoredProjects();
+  const index = projects.findIndex((p) => p.id === projectId);
+  if (index === -1) return null;
+
+  const now = new Date().toISOString();
+  const updated = {
+    ...projects[index],
+    updatedAt: now,
+    status: 'Model Ready',
+    modelFileReference: {
+      name: name || 'model.ply',
+      path,
+      sizeBytes,
+      lastModified,
+      updatedAt: now,
+    },
+  };
+
+  projects[index] = updated;
+  saveProjects(projects);
+  return updated;
 }
 
 /**

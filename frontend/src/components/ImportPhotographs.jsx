@@ -12,14 +12,18 @@ import {
   ShieldAlert,
   AlertCircle,
   Box,
-  HardDrive
+  HardDrive,
+  Monitor
 } from 'lucide-react';
+import { isElectron, selectNativeDirectory } from '../services/desktopBridge';
 
 export default function ImportPhotographs({
   currentProject = null,
   sessionImages = [],
+  nativeDirectory = null,
   projects = [],
   onUpdateProjectImages,
+  onUpdateProjectNativeDirectory,
   onProceedToStudio,
   onNavigateHome,
   onSelectProject,
@@ -68,7 +72,27 @@ export default function ImportPhotographs({
     };
   }, [sessionImages]);
 
-  // Handle Folder Selection via WebKit Directory
+  // Handle native folder selection via Electron desktop bridge
+  const handleNativeFolderSelect = async () => {
+    if (!currentProject) {
+      alert('Please create or select a local project first.');
+      return;
+    }
+
+    const result = await selectNativeDirectory();
+    if (result.canceled) return;
+
+    if (result.error) {
+      alert(`Directory selection error: ${result.error}`);
+      return;
+    }
+
+    if (result.path && onUpdateProjectNativeDirectory) {
+      onUpdateProjectNativeDirectory(currentProject.id, result);
+    }
+  };
+
+  // Handle Folder Selection via WebKit Directory (Browser fallback)
   const handleFolderChange = (e) => {
     const rawFiles = Array.from(e.target.files || []);
     if (rawFiles.length === 0) return;
@@ -132,7 +156,12 @@ export default function ImportPhotographs({
   const handleResetImages = () => {
     if (!currentProject) return;
     if (window.confirm(`Detach all photographs from project "${currentProject.name}"?`)) {
-      onUpdateProjectImages(currentProject.id, null, []);
+      if (onUpdateProjectNativeDirectory) {
+        onUpdateProjectNativeDirectory(currentProject.id, { path: null, name: null, fileCount: 0, totalSizeBytes: 0, imageFiles: [] });
+      }
+      if (onUpdateProjectImages) {
+        onUpdateProjectImages(currentProject.id, null, []);
+      }
     }
   };
 
@@ -144,8 +173,13 @@ export default function ImportPhotographs({
     return `${kb.toFixed(0)} KB`;
   };
 
-  const totalBytes = sessionImages.reduce((sum, f) => sum + (f.size || 0), 0);
-  const hasGenuineImages = sessionImages.length > 0;
+  const isNativeDirectoryAttached = currentProject?.sourceDirectoryReference?.storageType === 'desktop-path' && !!currentProject?.sourceDirectoryReference?.path;
+  const totalBytes = isNativeDirectoryAttached
+    ? (currentProject?.sourceDirectoryReference?.totalSizeBytes || 0)
+    : sessionImages.reduce((sum, f) => sum + (f.size || 0), 0);
+  const hasAttachedImages = isNativeDirectoryAttached
+    ? (currentProject?.sourceDirectoryReference?.fileCount || 0) > 0
+    : sessionImages.length > 0;
 
   // Representative realistic drone photographs for design preview
   const sampleThumbnails = [
@@ -202,7 +236,7 @@ export default function ImportPhotographs({
         </div>
 
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {hasGenuineImages && (
+          {hasAttachedImages && (
             <button
               type="button"
               className="btn-secondary"
@@ -288,15 +322,26 @@ export default function ImportPhotographs({
         </div>
       )}
 
-      {/* Honest Browser Limitation Box */}
-      <div className="browser-notice-box" style={{ marginBottom: '14px' }}>
-        <div className="notice-icon">
-          <ShieldAlert size={14} color="var(--color-warning)" />
+      {/* Environment-Aware Shell / Sandbox Notice */}
+      {isElectron ? (
+        <div className="browser-notice-box" style={{ marginBottom: '14px', borderColor: 'rgba(213, 255, 101, 0.25)' }}>
+          <div className="notice-icon">
+            <Monitor size={14} color="var(--accent)" />
+          </div>
+          <div className="notice-body">
+            <strong style={{ color: 'var(--accent)' }}>Desktop Shell Active:</strong> Windows filesystem paths are securely accessed through the Electron bridge under strict context isolation. Source image folders are bound by real directory path without duplicating files into memory or localStorage.
+          </div>
         </div>
-        <div className="notice-body">
-          <strong>Browser-Only Sandbox Notice:</strong> Web applications running in a browser cannot directly scan arbitrary Windows filesystem paths (such as <code style={{ fontFamily: 'var(--font-mono)' }}>D:\images_colmap\...</code>) or trigger background COLMAP/OpenMVS CLI processes. Selected photos are loaded into current browser session memory. Native filesystem directory binding and background pipeline workers will be integrated in Sprint 5B+.
+      ) : (
+        <div className="browser-notice-box" style={{ marginBottom: '14px' }}>
+          <div className="notice-icon">
+            <ShieldAlert size={14} color="var(--color-warning)" />
+          </div>
+          <div className="notice-body">
+            <strong>Browser-Only Sandbox Notice:</strong> Web browsers cannot directly access arbitrary Windows paths (such as <code style={{ fontFamily: 'var(--font-mono)' }}>D:\images_colmap\...</code>). Selected photos are held in current session memory only. Launch the Electron desktop shell to link permanent filesystem paths.
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Drag & Drop Visual Zone */}
       <div
@@ -320,33 +365,78 @@ export default function ImportPhotographs({
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => folderInputRef.current?.click()}
-            title="Select a directory containing photograph files"
-          >
-            <FolderSearch size={14} />
-            <span>Select Folder (Session)...</span>
-          </button>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+          {isElectron ? (
+            <>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={handleNativeFolderSelect}
+                title="Select a directory containing photograph files using Windows folder picker"
+              >
+                <FolderSearch size={14} />
+                <span>Select Folder (Native)...</span>
+              </button>
 
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => filesInputRef.current?.click()}
-            title="Select individual image files"
-          >
-            <ImageIcon size={14} />
-            <span>Select Image Files...</span>
-          </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => filesInputRef.current?.click()}
+                title="Select individual image files"
+              >
+                <ImageIcon size={14} />
+                <span>Select Image Files...</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => folderInputRef.current?.click()}
+                title="Select a directory containing photograph files"
+              >
+                <FolderSearch size={14} />
+                <span>Select Folder (Session)...</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => filesInputRef.current?.click()}
+                title="Select individual image files"
+              >
+                <ImageIcon size={14} />
+                <span>Select Image Files...</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Validation & Selected Dataset Summary Bar */}
       <div className="validation-bar">
         <div className="validation-tags">
-          {hasGenuineImages ? (
+          {isNativeDirectoryAttached ? (
+            <>
+              <div className="val-tag success">
+                <CheckCircle2 size={12} />
+                <span>
+                  Attached: {currentProject.sourceDirectoryReference.fileCount} Photographs ({formatFileSize(totalBytes)})
+                </span>
+              </div>
+              <div className="val-tag">
+                <Monitor size={12} color="var(--accent)" />
+                <span>Native Windows Path</span>
+              </div>
+              <div className="val-tag" title={currentProject.sourceDirectoryReference.path}>
+                <HardDrive size={12} />
+                <span style={{ maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {currentProject.sourceDirectoryReference.path}
+                </span>
+              </div>
+            </>
+          ) : hasAttachedImages ? (
             <>
               <div className="val-tag success">
                 <CheckCircle2 size={12} />
@@ -371,7 +461,11 @@ export default function ImportPhotographs({
         </div>
 
         <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-          {hasGenuineImages ? (
+          {isNativeDirectoryAttached ? (
+            <span>
+              Real path: <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>{currentProject.sourceDirectoryReference.path}</code>
+            </span>
+          ) : hasAttachedImages ? (
             <span>
               Directory reference: <code style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>{currentProject?.sourceDirectoryReference?.name || 'In-Memory Session'}</code>
             </span>
@@ -381,8 +475,44 @@ export default function ImportPhotographs({
         </div>
       </div>
 
-      {/* Genuine Attached Images Thumbnails */}
-      {hasGenuineImages && (
+      {/* Native Directory Info Card (Electron Desktop Mode) */}
+      {isNativeDirectoryAttached && (
+        <div className="glass-panel" style={{ padding: '12px 16px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <HardDrive size={16} color="var(--accent)" />
+              <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                Native Folder: {currentProject.sourceDirectoryReference.name}
+              </span>
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              {currentProject.sourceDirectoryReference.fileCount} image files • {formatFileSize(totalBytes)}
+            </span>
+          </div>
+          <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: 'var(--radius-xs)' }}>
+            {currentProject.sourceDirectoryReference.path}
+          </div>
+          {nativeDirectory?.imageFiles && nativeDirectory.imageFiles.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px', maxHeight: '160px', overflowY: 'auto' }}>
+              {nativeDirectory.imageFiles.slice(0, 48).map((img, i) => (
+                <div key={i} style={{ background: 'var(--bg-secondary)', padding: '4px 8px', borderRadius: '4px', fontSize: '10.5px', color: 'var(--text-secondary)', display: 'flex', gap: '6px' }}>
+                  <ImageIcon size={11} color="var(--accent)" />
+                  <span>{img.name}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>({formatFileSize(img.size)})</span>
+                </div>
+              ))}
+              {nativeDirectory.imageFiles.length > 48 && (
+                <div style={{ padding: '4px 8px', fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                  + {nativeDirectory.imageFiles.length - 48} more files...
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Genuine Attached Images Thumbnails (Browser Mode) */}
+      {!isNativeDirectoryAttached && hasAttachedImages && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>

@@ -9,9 +9,11 @@ import {
   AlertCircle,
   ShieldAlert,
   HardDrive,
-  Cpu
+  Cpu,
+  Monitor
 } from 'lucide-react';
 import { validateProjectName, createProject } from '../services/projectService';
+import { isElectron, selectNativeDirectory, selectNativePlyFile } from '../services/desktopBridge';
 
 export default function CreateProjectModal({
   isOpen,
@@ -26,9 +28,11 @@ export default function CreateProjectModal({
   // Optional Source Folder / Images
   const [sourceDirName, setSourceDirName] = useState(null);
   const [selectedImages, setSelectedImages] = useState([]);
+  const [nativeDirectory, setNativeDirectory] = useState(null);
 
   // Optional PLY Model
   const [selectedPlyFile, setSelectedPlyFile] = useState(null);
+  const [nativePly, setNativePly] = useState(null);
 
   // Navigation preference
   const [openDirectlyInStudio, setOpenDirectlyInStudio] = useState(false);
@@ -45,7 +49,9 @@ export default function CreateProjectModal({
       setTouched(false);
       setSourceDirName(null);
       setSelectedImages([]);
+      setNativeDirectory(null);
       setSelectedPlyFile(null);
+      setNativePly(null);
       setOpenDirectlyInStudio(false);
 
       setTimeout(() => {
@@ -103,9 +109,10 @@ export default function CreateProjectModal({
 
     setSourceDirName(dirName);
     setSelectedImages(imageFiles);
+    setNativeDirectory(null);
   };
 
-  // PLY Model Selection
+  // PLY Model Selection (Browser input)
   const handlePlySelect = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -116,8 +123,55 @@ export default function CreateProjectModal({
     }
 
     setSelectedPlyFile(file);
+    setNativePly(null);
     // If a PLY file is selected, conveniently default to opening directly in Studio
     setOpenDirectlyInStudio(true);
+  };
+
+  // Folder trigger (Electron native vs Browser input)
+  const handleTriggerFolder = async () => {
+    if (isElectron) {
+      try {
+        const result = await selectNativeDirectory();
+        if (result.canceled) return;
+        if (result.error) {
+          alert(`Directory selection error: ${result.error}`);
+          return;
+        }
+        if (result.path) {
+          setNativeDirectory(result);
+          setSourceDirName(result.name);
+          setSelectedImages([]);
+        }
+      } catch (err) {
+        console.error('Aeromorph Desktop: Native folder dialog error:', err);
+      }
+    } else {
+      folderInputRef.current?.click();
+    }
+  };
+
+  // PLY trigger (Electron native vs Browser input)
+  const handleTriggerPly = async () => {
+    if (isElectron) {
+      try {
+        const result = await selectNativePlyFile();
+        if (result.canceled) return;
+        if (result.error) {
+          alert(`PLY file selection error: ${result.error}`);
+          return;
+        }
+        if (result.path) {
+          setNativePly(result);
+          setSelectedPlyFile(null);
+          setOpenDirectlyInStudio(true);
+        }
+      } catch (err) {
+        console.error('Aeromorph Desktop: Native PLY dialog error:', err);
+      }
+    } else {
+      plyInputRef.current?.click();
+    }
   };
 
   const formatFileSize = (bytes) => {
@@ -144,6 +198,8 @@ export default function CreateProjectModal({
       sourceDirName: sourceDirName,
       imageFiles: selectedImages,
       modelFile: selectedPlyFile,
+      nativeDirectory: nativeDirectory,
+      nativePly: nativePly,
     });
 
     if (error) {
@@ -177,7 +233,7 @@ export default function CreateProjectModal({
                 Create Local Project
               </h2>
               <span className="modal-subtitle">
-                Sprint 5A: Browser-Compatible Project Workspace
+                {isElectron ? 'Sprint 5B: Desktop Local Photogrammetry Workspace' : 'Sprint 5A: Browser-Compatible Project Workspace'}
               </span>
             </div>
           </div>
@@ -230,12 +286,13 @@ export default function CreateProjectModal({
               <label className="form-label">
                 Source Photographs Reference <span className="label-badge-dim">Optional</span>
               </label>
-              {selectedImages.length > 0 && (
+              {(selectedImages.length > 0 || nativeDirectory) && (
                 <button
                   type="button"
                   className="btn-link"
                   onClick={() => {
                     setSelectedImages([]);
+                    setNativeDirectory(null);
                     setSourceDirName(null);
                     if (folderInputRef.current) folderInputRef.current.value = '';
                   }}
@@ -257,7 +314,25 @@ export default function CreateProjectModal({
               onChange={handleFolderSelect}
             />
 
-            {selectedImages.length > 0 ? (
+            {nativeDirectory ? (
+              <div className="asset-selected-box">
+                <div className="asset-info-left">
+                  <div className="asset-icon-box">
+                    <Monitor size={16} color="var(--accent)" />
+                  </div>
+                  <div>
+                    <div className="asset-title">{nativeDirectory.name}</div>
+                    <div className="asset-meta">
+                      {nativeDirectory.fileCount} photos • {formatFileSize(nativeDirectory.totalSizeBytes)} • Native Path
+                    </div>
+                  </div>
+                </div>
+                <span className="asset-badge-success">
+                  <CheckCircle2 size={12} />
+                  <span>Referenced</span>
+                </span>
+              </div>
+            ) : selectedImages.length > 0 ? (
               <div className="asset-selected-box">
                 <div className="asset-info-left">
                   <div className="asset-icon-box">
@@ -285,13 +360,15 @@ export default function CreateProjectModal({
                   type="button"
                   className="btn-secondary"
                   style={{ width: '100%', justifyContent: 'flex-start' }}
-                  onClick={() => folderInputRef.current?.click()}
+                  onClick={handleTriggerFolder}
                 >
                   <FolderOpen size={14} />
-                  <span>Select Local Image Directory...</span>
+                  <span>{isElectron ? 'Select Windows Photo Directory (Native)...' : 'Select Local Image Directory...'}</span>
                 </button>
                 <span className="form-hint" style={{ marginTop: '4px' }}>
-                  Selects an image folder for this browser session. (Permanent filesystem path binding requires native desktop bridge in later sprint).
+                  {isElectron
+                    ? 'Binds source directory path via Windows folder dialog. Files remain on disk.'
+                    : 'Selects an image folder for this browser session. (Permanent path binding requires Electron desktop shell).'}
                 </span>
               </div>
             )}
@@ -303,12 +380,13 @@ export default function CreateProjectModal({
               <label className="form-label">
                 Reconstructed PLY Model Reference <span className="label-badge-dim">Optional</span>
               </label>
-              {selectedPlyFile && (
+              {(selectedPlyFile || nativePly) && (
                 <button
                   type="button"
                   className="btn-link"
                   onClick={() => {
                     setSelectedPlyFile(null);
+                    setNativePly(null);
                     if (plyInputRef.current) plyInputRef.current.value = '';
                   }}
                 >
@@ -326,7 +404,25 @@ export default function CreateProjectModal({
               onChange={handlePlySelect}
             />
 
-            {selectedPlyFile ? (
+            {nativePly ? (
+              <div className="asset-selected-box">
+                <div className="asset-info-left">
+                  <div className="asset-icon-box">
+                    <Box size={16} color="var(--accent)" />
+                  </div>
+                  <div>
+                    <div className="asset-title">{nativePly.name}</div>
+                    <div className="asset-meta">
+                      {formatFileSize(nativePly.sizeBytes)} • Native PLY Path
+                    </div>
+                  </div>
+                </div>
+                <span className="asset-badge-success">
+                  <CheckCircle2 size={12} />
+                  <span>Ready to Render</span>
+                </span>
+              </div>
+            ) : selectedPlyFile ? (
               <div className="asset-selected-box">
                 <div className="asset-info-left">
                   <div className="asset-icon-box">
@@ -350,10 +446,10 @@ export default function CreateProjectModal({
                   type="button"
                   className="btn-secondary"
                   style={{ width: '100%', justifyContent: 'flex-start' }}
-                  onClick={() => plyInputRef.current?.click()}
+                  onClick={handleTriggerPly}
                 >
                   <Box size={14} />
-                  <span>Attach Local .PLY 3D Model...</span>
+                  <span>{isElectron ? 'Attach Local .PLY 3D Model (Native)...' : 'Attach Local .PLY 3D Model...'}</span>
                 </button>
                 <span className="form-hint" style={{ marginTop: '4px' }}>
                   If you already have a reconstructed PLY mesh, associate it to load immediately into the 3D studio.
@@ -362,15 +458,26 @@ export default function CreateProjectModal({
             )}
           </div>
 
-          {/* Honest Browser Limitation Banner */}
-          <div className="browser-notice-box">
-            <div className="notice-icon">
-              <ShieldAlert size={14} color="var(--color-warning)" />
+          {/* Environment-Aware Shell / Sandbox Notice */}
+          {isElectron ? (
+            <div className="browser-notice-box" style={{ borderColor: 'rgba(213, 255, 101, 0.25)' }}>
+              <div className="notice-icon">
+                <Monitor size={14} color="var(--accent)" />
+              </div>
+              <div className="notice-body">
+                <strong style={{ color: 'var(--accent)' }}>Desktop Shell Active:</strong> Real filesystem directory and model paths will be preserved in your project record under context isolation.
+              </div>
             </div>
-            <div className="notice-body">
-              <strong>Browser Sandbox Notice:</strong> Project metadata is saved to local storage. Raw photograph and model file handles are kept in session memory. Native Windows filesystem persistence and automated reconstruction CLI execution require the desktop bridge in future sprints.
+          ) : (
+            <div className="browser-notice-box">
+              <div className="notice-icon">
+                <ShieldAlert size={14} color="var(--color-warning)" />
+              </div>
+              <div className="notice-body">
+                <strong>Browser Sandbox Notice:</strong> Project metadata is saved to local storage. Raw photograph and model file handles are kept in session memory. Native Windows filesystem persistence requires the desktop shell.
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Direct Navigation Checkbox */}
           <div className="form-checkbox-row">

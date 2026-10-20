@@ -197,9 +197,14 @@ export default function ProjectsHome({
                             Active
                           </span>
                         )}
+                        {proj.sourceDirectoryReference?.storageType === 'desktop-path' && (
+                          <span className="active-badge" style={{ background: 'rgba(213,255,101,0.12)', color: 'var(--accent)', borderColor: 'rgba(213,255,101,0.3)' }} title="Referenced directly on local Windows filesystem">
+                            Desktop
+                          </span>
+                        )}
                       </div>
-                      <div className="project-location" title={`Project ID: ${proj.id}`}>
-                        ID: {proj.id} • Created {formatDate(proj.createdAt)}
+                      <div className="project-location" title={proj.sourceDirectoryReference?.path || `Project ID: ${proj.id}`}>
+                        {proj.sourceDirectoryReference?.path ? proj.sourceDirectoryReference.path : `ID: ${proj.id} • Created ${formatDate(proj.createdAt)}`}
                       </div>
                     </div>
 
@@ -233,7 +238,7 @@ export default function ProjectsHome({
 
                     <div className="metric-item">
                       <span className="metric-label">Model Mesh</span>
-                      <span className="metric-value" title={hasModel ? proj.modelFileReference.name : 'None'}>
+                      <span className="metric-value" title={hasModel ? (proj.modelFileReference.path || proj.modelFileReference.name) : 'None'}>
                         {hasModel
                           ? formatFileSize(proj.modelFileReference.sizeBytes)
                           : 'None (Demo)'}
@@ -244,10 +249,10 @@ export default function ProjectsHome({
                       <span className="metric-label">Directory Ref</span>
                       <span
                         className="metric-value"
-                        title={hasPhotos ? proj.sourceDirectoryReference.name : 'Not configured'}
+                        title={hasPhotos ? (proj.sourceDirectoryReference.path || proj.sourceDirectoryReference.name) : 'Not configured'}
                         style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                       >
-                        {hasPhotos ? proj.sourceDirectoryReference.name : '—'}
+                        {hasPhotos ? (proj.sourceDirectoryReference.name) : '—'}
                       </span>
                     </div>
                   </div>

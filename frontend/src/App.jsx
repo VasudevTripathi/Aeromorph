@@ -11,6 +11,8 @@ import {
   deleteProject as deleteProjectRecord,
   setProjectSourceImages,
   setProjectModelFile,
+  setProjectNativeDirectory,
+  setProjectNativePly,
   getSessionAssets,
 } from './services/projectService';
 import './App.css';
@@ -44,8 +46,13 @@ export default function App() {
   // Compute active project
   const currentProject = projects.find((p) => p.id === activeProjectId) || null;
 
-  // Retrieve current in-memory session assets for active project
-  const { modelFile: sessionModelFile, imageFiles: sessionImages } = getSessionAssets(activeProjectId);
+  // Retrieve current in-memory session assets and native references for active project
+  const {
+    modelFile: sessionModelFile,
+    imageFiles: sessionImages,
+    nativeDirectory,
+    nativePly,
+  } = getSessionAssets(activeProjectId);
 
   // Navigation & Project Handlers
   const handleOpenCreateModal = () => {
@@ -91,9 +98,26 @@ export default function App() {
     }
   };
 
+  const handleUpdateProjectNativeDirectory = (projectId, dirInfo) => {
+    const updatedProject = setProjectNativeDirectory(projectId, dirInfo);
+    if (updatedProject) {
+      setProjects(getStoredProjects());
+      setSessionTick((t) => t + 1);
+    }
+  };
+
   const handleAttachModelFile = (file) => {
     if (!activeProjectId) return;
     const updatedProject = setProjectModelFile(activeProjectId, file);
+    if (updatedProject) {
+      setProjects(getStoredProjects());
+      setSessionTick((t) => t + 1);
+    }
+  };
+
+  const handleAttachNativePly = (plyInfo) => {
+    if (!activeProjectId) return;
+    const updatedProject = setProjectNativePly(activeProjectId, plyInfo);
     if (updatedProject) {
       setProjects(getStoredProjects());
       setSessionTick((t) => t + 1);
@@ -143,8 +167,10 @@ export default function App() {
           <ImportPhotographs
             currentProject={currentProject}
             sessionImages={sessionImages}
+            nativeDirectory={nativeDirectory}
             projects={projects}
             onUpdateProjectImages={handleUpdateProjectImages}
+            onUpdateProjectNativeDirectory={handleUpdateProjectNativeDirectory}
             onProceedToStudio={handleProceedToStudio}
             onNavigateHome={handleNavigateHome}
             onSelectProject={handleSelectProject}
@@ -156,6 +182,7 @@ export default function App() {
             currentProject={currentProject}
             sessionModelFile={sessionModelFile}
             onAttachModelFile={handleAttachModelFile}
+            onAttachNativePly={handleAttachNativePly}
             onNavigateHome={handleNavigateHome}
             onNavigateImport={handleNavigateImport}
           />
