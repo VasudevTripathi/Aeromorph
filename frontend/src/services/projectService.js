@@ -31,6 +31,10 @@ export function validateProjectName(name, existingProjects = [], currentProjectI
 
   const trimmed = name.trim();
 
+  if (trimmed.length === 0) {
+    return { isValid: false, error: 'Project name is required.' };
+  }
+
   if (trimmed.length < 2) {
     return { isValid: false, error: 'Project name must be at least 2 characters long.' };
   }
@@ -47,7 +51,7 @@ export function validateProjectName(name, existingProjects = [], currentProjectI
 
   // Check uniqueness (case-insensitive)
   const isDuplicate = existingProjects.some(
-    (p) => p.id !== currentProjectId && p.name.trim().toLowerCase() === trimmed.toLowerCase()
+    (p) => p && typeof p.name === 'string' && p.id !== currentProjectId && p.name.trim().toLowerCase() === trimmed.toLowerCase()
   );
 
   if (isDuplicate) {
@@ -66,7 +70,38 @@ export function getStoredProjects() {
     const raw = localStorage.getItem(STORAGE_KEY_PROJECTS);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+
+    // Filter and sanitize to ensure all items are valid project records
+    return parsed
+      .filter((p) => (
+        p &&
+        typeof p === 'object' &&
+        typeof p.id === 'string' &&
+        p.id.trim().length > 0 &&
+        typeof p.name === 'string' &&
+        p.name.trim().length > 0
+      ))
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        createdAt: typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString(),
+        updatedAt: typeof p.updatedAt === 'string' ? p.updatedAt : (typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString()),
+        status: typeof p.status === 'string' ? p.status : 'Created',
+        sourceDirectoryReference: (p.sourceDirectoryReference && typeof p.sourceDirectoryReference === 'object') ? {
+          name: typeof p.sourceDirectoryReference.name === 'string' ? p.sourceDirectoryReference.name : 'Attached Photographs',
+          fileCount: Number.isFinite(p.sourceDirectoryReference.fileCount) ? p.sourceDirectoryReference.fileCount : 0,
+          totalSizeBytes: Number.isFinite(p.sourceDirectoryReference.totalSizeBytes) ? p.sourceDirectoryReference.totalSizeBytes : 0,
+          storageType: 'browser-session',
+          updatedAt: typeof p.sourceDirectoryReference.updatedAt === 'string' ? p.sourceDirectoryReference.updatedAt : new Date().toISOString(),
+        } : null,
+        modelFileReference: (p.modelFileReference && typeof p.modelFileReference === 'object') ? {
+          name: typeof p.modelFileReference.name === 'string' ? p.modelFileReference.name : 'model.ply',
+          sizeBytes: Number.isFinite(p.modelFileReference.sizeBytes) ? p.modelFileReference.sizeBytes : 0,
+          lastModified: Number.isFinite(p.modelFileReference.lastModified) ? p.modelFileReference.lastModified : null,
+          updatedAt: typeof p.modelFileReference.updatedAt === 'string' ? p.modelFileReference.updatedAt : new Date().toISOString(),
+        } : null,
+      }));
   } catch (err) {
     console.warn('Aeromorph: Failed to read projects from localStorage:', err);
     return [];
@@ -117,7 +152,8 @@ export function saveProjects(projects) {
  */
 export function getActiveProjectId() {
   try {
-    return localStorage.getItem(STORAGE_KEY_ACTIVE_ID) || null;
+    const val = localStorage.getItem(STORAGE_KEY_ACTIVE_ID);
+    return typeof val === 'string' && val.trim().length > 0 ? val : null;
   } catch {
     return null;
   }

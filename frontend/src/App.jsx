@@ -35,6 +35,9 @@ export default function App() {
     } else if (loadedProjects.length > 0) {
       setActiveProjectId(loadedProjects[0].id);
       persistActiveProjectId(loadedProjects[0].id);
+    } else {
+      setActiveProjectId(null);
+      persistActiveProjectId(null);
     }
   }, []);
 

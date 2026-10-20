@@ -52,7 +52,8 @@ export default function Viewport3D({
   const canvasContainerRef = useRef(null);
   const fileInputRef = useRef(null);
   const loadRequestIdRef = useRef(0);
-  const autoLoadedFileRef = useRef(null);
+  const currentProjectIdRef = useRef(currentProject?.id);
+  const activeLoadedFileRef = useRef(null);
 
   // Three.js Core References
   const sceneRef = useRef(null);
@@ -452,6 +453,7 @@ export default function Viewport3D({
         }
 
         processPlyBuffer(buffer, file.name, file.size, requestId);
+        activeLoadedFileRef.current = file;
 
         if (!isAutoLoad && onAttachModelFile) {
           onAttachModelFile(file);
@@ -472,16 +474,24 @@ export default function Viewport3D({
     loadPlyFromFile(file, false);
   };
 
-  // Automatically load project session model if available and not yet loaded
+  // Synchronize 3D model with active project and session model file
   useEffect(() => {
-    if (sessionModelFile && sessionModelFile !== autoLoadedFileRef.current) {
-      autoLoadedFileRef.current = sessionModelFile;
-      loadPlyFromFile(sessionModelFile, true);
-    } else if (!sessionModelFile && autoLoadedFileRef.current) {
-      autoLoadedFileRef.current = null;
-      handleRevertToDemo();
+    const isProjectSwitched = currentProjectIdRef.current !== currentProject?.id;
+    currentProjectIdRef.current = currentProject?.id;
+
+    if (sessionModelFile) {
+      if (activeLoadedFileRef.current !== sessionModelFile || isProjectSwitched) {
+        activeLoadedFileRef.current = sessionModelFile;
+        loadPlyFromFile(sessionModelFile, true);
+      }
+    } else {
+      // If current project has no session model file, or project switched, ensure demo pavilion is shown
+      if (activeLoadedFileRef.current !== null || isProjectSwitched || (demoPavilionGroupRef.current && !demoPavilionGroupRef.current.visible)) {
+        activeLoadedFileRef.current = null;
+        handleRevertToDemo();
+      }
     }
-  }, [sessionModelFile]);
+  }, [currentProject?.id, sessionModelFile]);
 
   const processPlyBuffer = (buffer, fileName, fileSize, requestId) => {
     const loader = new PLYLoader();
@@ -679,6 +689,7 @@ export default function Viewport3D({
     if (gridHelperRef.current) gridHelperRef.current.position.y = 0;
     if (axesHelperRef.current) axesHelperRef.current.position.set(0, 0.01, 0);
 
+    activeLoadedFileRef.current = null;
     setLoadedModel(null);
     setPlyError(null);
   };
