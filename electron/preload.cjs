@@ -60,4 +60,45 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
     };
     return ipcRenderer.invoke('system:checkExecutablePaths', sanitized);
   },
+
+  /**
+   * Run read-only local environment detection for COLMAP and OpenMVS (Sprint 6A)
+   * @param {Object} options - Optional custom paths { customColmapPath?: string, customOpenmvsPath?: string }
+   * @returns {Promise<{ colmap: Object, openmvs: Object, environmentReady: boolean }>}
+   */
+  detectEnvironment: (options = {}) => {
+    const sanitized = {
+      customColmapPath: typeof options.customColmapPath === 'string' && !options.customColmapPath.includes('\0')
+        ? options.customColmapPath.trim()
+        : null,
+      customOpenmvsPath: typeof options.customOpenmvsPath === 'string' && !options.customOpenmvsPath.includes('\0')
+        ? options.customOpenmvsPath.trim()
+        : null,
+    };
+    return ipcRenderer.invoke('system:detectEnvironment', sanitized);
+  },
+
+  /**
+   * Prompt user with native Windows file picker to locate colmap.exe
+   * @returns {Promise<{ canceled: boolean, path?: string, version?: string, error?: string }>}
+   */
+  selectColmapExecutable: () => ipcRenderer.invoke('dialog:selectColmapExecutable'),
+
+  /**
+   * Prompt user with native Windows file picker to locate OpenMVS executable
+   * @returns {Promise<{ canceled: boolean, path?: string, version?: string, error?: string }>}
+   */
+  selectOpenMvsExecutable: () => ipcRenderer.invoke('dialog:selectOpenMvsExecutable'),
+
+  /**
+   * Validate a source photograph directory path without launching file picker
+   * @param {string} dirPath - Candidate directory path
+   * @returns {Promise<{ valid: boolean, accessible: boolean, path?: string, name?: string, fileCount: number, totalSizeBytes: number, imageFiles: Array<{ name: string, size: number }>, error?: string }>}
+   */
+  validateImageDirectory: (dirPath) => {
+    if (typeof dirPath !== 'string' || !dirPath.trim() || dirPath.includes('\0')) {
+      return Promise.reject(new Error('Invalid directory path argument'));
+    }
+    return ipcRenderer.invoke('system:validateImageDirectory', dirPath.trim());
+  },
 });

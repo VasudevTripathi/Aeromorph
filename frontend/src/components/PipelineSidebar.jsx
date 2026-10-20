@@ -8,40 +8,40 @@ export default function PipelineSidebar({ activeStage, onSelectStage, currentPro
       num: '01',
       name: 'Feature Extraction',
       engine: 'COLMAP (SIFT)',
-      status: 'done',
-      stats: '128 / 128 images calibrated',
+      status: 'pending',
+      stats: 'Pending pipeline launch (Sprint 6B)',
     },
     {
       id: 'feature_matching',
       num: '02',
       name: 'Feature Matching',
       engine: 'COLMAP Exhaustive',
-      status: 'done',
-      stats: '8,128 image pairs matched',
+      status: 'pending',
+      stats: 'Pending pipeline launch (Sprint 6B)',
     },
     {
       id: 'sparse_reconstruction',
       num: '03',
       name: 'Sparse Point Cloud (SfM)',
       engine: 'COLMAP Mapper',
-      status: 'done',
-      stats: '61,129 3D landmarks',
+      status: 'pending',
+      stats: 'Pending pipeline launch (Sprint 6B)',
     },
     {
       id: 'dense_reconstruction',
       num: '04',
       name: 'Dense Point Cloud',
       engine: 'OpenMVS Densify',
-      status: 'done',
-      stats: '7,845,251 dense points',
+      status: 'pending',
+      stats: 'Pending pipeline launch (Sprint 6B)',
     },
     {
       id: 'mesh_reconstruction',
       num: '05',
       name: 'Mesh Generation',
       engine: 'OpenMVS ReconstructMesh',
-      status: 'done',
-      stats: '3,411,172 vertices / 6.8M faces',
+      status: currentProject?.modelFileReference ? 'ready' : 'pending',
+      stats: currentProject?.modelFileReference ? `Attached PLY: ${currentProject.modelFileReference.name}` : 'Pending pipeline launch (Sprint 6B)',
     },
     {
       id: 'texture_mapping',
@@ -93,8 +93,8 @@ export default function PipelineSidebar({ activeStage, onSelectStage, currentPro
                   <span className="stage-number">{stage.num}</span>
                   <span className="stage-title">{stage.name}</span>
                 </div>
-                <span className={`stage-badge ${stage.status}`}>
-                  {isCompleted ? 'Sample Ready' : 'Pending'}
+                <span className={`stage-badge ${stage.status === 'ready' ? 'done' : 'idle'}`}>
+                  {stage.status === 'ready' ? 'Attached Mesh' : 'Pending (6B)'}
                 </span>
               </div>
               <div className="stage-detail">
@@ -120,12 +120,12 @@ export default function PipelineSidebar({ activeStage, onSelectStage, currentPro
 
         <button
           type="button"
-          className="btn-primary"
-          style={{ width: '100%', marginTop: '3px' }}
-          title="Backend execution connects in future sprint"
+          className="btn-secondary"
+          style={{ width: '100%', marginTop: '3px', opacity: 0.85 }}
+          title="Reconstruction pipeline execution will be launched in Sprint 6B. Environment detection complete."
         >
-          <Play size={13} fill="currentColor" />
-          <span>Run Pipeline (Visual Demo)</span>
+          <Play size={13} />
+          <span>Launch Pipeline (Sprint 6B)</span>
         </button>
       </div>
     </aside>

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   UploadCloud,
   FolderSearch,
@@ -13,9 +13,22 @@ import {
   AlertCircle,
   Box,
   HardDrive,
-  Monitor
+  Monitor,
+  Wrench,
+  RefreshCw,
+  FileSearch,
+  Check,
+  AlertTriangle
 } from 'lucide-react';
-import { isElectron, selectNativeDirectory } from '../services/desktopBridge';
+import {
+  isElectron,
+  selectNativeDirectory,
+  detectEnvironment,
+  selectColmapExecutable,
+  selectOpenMvsExecutable,
+  validateImageDirectory,
+} from '../services/desktopBridge';
+import { getCustomToolPaths, saveCustomToolPaths } from '../services/projectService';
 
 export default function ImportPhotographs({
   currentProject = null,
@@ -31,6 +44,16 @@ export default function ImportPhotographs({
   const [dragActive, setDragActive] = useState(false);
   const [showSamplePreview, setShowSamplePreview] = useState(false);
   const [previewUrls, setPreviewUrls] = useState([]);
+
+  // Sprint 6A: Environment detection and folder validation state
+  const [envState, setEnvState] = useState({
+    loading: true,
+    colmap: { detected: false, path: null, version: null, status: 'Checking...', error: null },
+    openmvs: { detected: false, path: null, version: null, status: 'Checking...', error: null },
+    environmentReady: false,
+  });
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [folderValidation, setFolderValidation] = useState(null);
 
   const folderInputRef = useRef(null);
   const filesInputRef = useRef(null);
@@ -72,6 +95,90 @@ export default function ImportPhotographs({
     };
   }, [sessionImages]);
 
+  // Load and refresh environment detection (Sprint 6A)
+  const loadEnvironment = useCallback(async () => {
+    setIsDetecting(true);
+    try {
+      const savedPaths = getCustomToolPaths();
+      const res = await detectEnvironment({
+        customColmapPath: savedPaths.colmapPath,
+        customOpenmvsPath: savedPaths.openmvsPath,
+      });
+      setEnvState({
+        loading: false,
+        colmap: res.colmap || { detected: false, status: 'Not Detected' },
+        openmvs: res.openmvs || { detected: false, status: 'Not Detected' },
+        environmentReady: Boolean(res.environmentReady),
+      });
+    } catch (err) {
+      console.error('Environment check failed:', err);
+      setEnvState((prev) => ({ ...prev, loading: false }));
+    } finally {
+      setIsDetecting(false);
+    }
+  }, []);
+
+  // Run environment detection on mount
+  useEffect(() => {
+    loadEnvironment();
+  }, [loadEnvironment]);
+
+  // Validate active project source directory on project change or directory update
+  useEffect(() => {
+    const dirPath = currentProject?.sourceDirectoryReference?.path;
+    const isDesktopPath = currentProject?.sourceDirectoryReference?.storageType === 'desktop-path';
+
+    if (!isElectron || !isDesktopPath || !dirPath) {
+      setFolderValidation(null);
+      return;
+    }
+
+    let isMounted = true;
+    validateImageDirectory(dirPath)
+      .then((res) => {
+        if (isMounted) {
+          setFolderValidation(res);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setFolderValidation({ valid: false, accessible: false, error: err.message, fileCount: 0 });
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentProject?.id, currentProject?.sourceDirectoryReference?.path, currentProject?.sourceDirectoryReference?.storageType]);
+
+  // Handle selecting custom colmap.exe
+  const handleSelectColmapPath = async () => {
+    const result = await selectColmapExecutable();
+    if (result.canceled) return;
+    if (result.error) {
+      alert(`COLMAP selection error: ${result.error}`);
+      return;
+    }
+    if (result.path) {
+      saveCustomToolPaths({ colmapPath: result.path });
+      loadEnvironment();
+    }
+  };
+
+  // Handle selecting custom OpenMVS executable
+  const handleSelectOpenMvsPath = async () => {
+    const result = await selectOpenMvsExecutable();
+    if (result.canceled) return;
+    if (result.error) {
+      alert(`OpenMVS selection error: ${result.error}`);
+      return;
+    }
+    if (result.path) {
+      saveCustomToolPaths({ openmvsPath: result.path });
+      loadEnvironment();
+    }
+  };
+
   // Handle native folder selection via Electron desktop bridge
   const handleNativeFolderSelect = async () => {
     if (!currentProject) {
@@ -82,7 +189,7 @@ export default function ImportPhotographs({
     const result = await selectNativeDirectory();
     if (result.canceled) return;
 
-    if (result.error) {
+    if (result.error && !result.valid) {
       alert(`Directory selection error: ${result.error}`);
       return;
     }
@@ -343,6 +450,128 @@ export default function ImportPhotographs({
         </div>
       )}
 
+      {/* Sprint 6A: Environment & Photogrammetry Toolchain Card */}
+      <div className="glass-panel" style={{ padding: '14px 18px', marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Wrench size={16} color="var(--accent)" />
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+              Photogrammetry Toolchain & Environment (Sprint 6A)
+            </span>
+            {envState.environmentReady ? (
+              <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.1)', color: 'var(--accent)', borderColor: 'rgba(213, 255, 101, 0.3)' }}>
+                Environment Ready
+              </span>
+            ) : (
+              <span className="sample-indicator-tag" style={{ color: 'var(--color-warning)', borderColor: 'var(--color-warning-dim)' }}>
+                Configuration Required
+              </span>
+            )}
+          </div>
+
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={loadEnvironment}
+            disabled={isDetecting}
+            title="Re-run toolchain detection"
+            style={{ fontSize: '11px', padding: '4px 8px', gap: '5px' }}
+          >
+            <RefreshCw size={12} className={isDetecting ? 'animate-spin' : ''} />
+            <span>{isDetecting ? 'Detecting...' : 'Recheck Tools'}</span>
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '10px' }}>
+          {/* COLMAP Status */}
+          <div style={{ background: 'var(--bg-secondary)', padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                <span className={`status-dot ${envState.colmap.detected ? 'online' : 'idle'}`} />
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  COLMAP (Structure from Motion)
+                </span>
+              </div>
+              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: envState.colmap.detected ? 'var(--accent)' : 'var(--text-muted)' }}>
+                {envState.colmap.version ? `v${envState.colmap.version}` : (envState.colmap.detected ? 'Detected' : 'Missing')}
+              </span>
+            </div>
+
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={envState.colmap.path || envState.colmap.error}>
+              {envState.colmap.path ? (
+                <code style={{ fontFamily: 'var(--font-mono)', fontSize: '10.5px' }}>{envState.colmap.path}</code>
+              ) : (
+                <span style={{ color: 'var(--color-warning)' }}>{envState.colmap.error || 'colmap.exe not found'}</span>
+              )}
+            </div>
+
+            {isElectron && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleSelectColmapPath}
+                style={{ width: '100%', fontSize: '11px', padding: '4px 8px', justifyContent: 'center' }}
+              >
+                <FileSearch size={12} />
+                <span>{envState.colmap.detected ? 'Change colmap.exe Path...' : 'Locate colmap.exe...'}</span>
+              </button>
+            )}
+          </div>
+
+          {/* OpenMVS Status */}
+          <div style={{ background: 'var(--bg-secondary)', padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                <span className={`status-dot ${envState.openmvs.detected ? 'online' : 'idle'}`} />
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  OpenMVS (MVS & Meshing)
+                </span>
+              </div>
+              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: envState.openmvs.detected ? 'var(--accent)' : 'var(--text-muted)' }}>
+                {envState.openmvs.version ? `v${envState.openmvs.version}` : (envState.openmvs.detected ? 'Detected' : 'Missing')}
+              </span>
+            </div>
+
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={envState.openmvs.path || envState.openmvs.error}>
+              {envState.openmvs.path ? (
+                <code style={{ fontFamily: 'var(--font-mono)', fontSize: '10.5px' }}>{envState.openmvs.path}</code>
+              ) : (
+                <span style={{ color: 'var(--color-warning)' }}>{envState.openmvs.error || 'InterfaceCOLMAP.exe not found'}</span>
+              )}
+            </div>
+
+            {isElectron && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleSelectOpenMvsPath}
+                style={{ width: '100%', fontSize: '11px', padding: '4px 8px', justifyContent: 'center' }}
+              >
+                <FileSearch size={12} />
+                <span>{envState.openmvs.detected ? 'Change OpenMVS Path...' : 'Locate InterfaceCOLMAP.exe...'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Pipeline Readiness Disclaimer */}
+        <div style={{ fontSize: '11px', color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+          <div>
+            <span style={{ color: envState.environmentReady ? 'var(--accent)' : 'var(--text-secondary)', fontWeight: 500 }}>
+              {envState.environmentReady ? '• Pipeline Ready: ' : '• Setup Needed: '}
+            </span>
+            <span>
+              {envState.environmentReady
+                ? 'Environment validated. (Reconstruction engine execution will be launched in Sprint 6B).'
+                : 'Please locate missing executables above to enable reconstruction.'}
+            </span>
+          </div>
+          <span style={{ fontSize: '10.5px', fontFamily: 'var(--font-mono)' }}>
+            Sprint 6A: Environment Check Only
+          </span>
+        </div>
+      </div>
+
       {/* Drag & Drop Visual Zone */}
       <div
         className={`import-dropzone ${dragActive ? 'active' : ''}`}
@@ -492,6 +721,18 @@ export default function ImportPhotographs({
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: 'var(--radius-xs)' }}>
             {currentProject.sourceDirectoryReference.path}
           </div>
+          {folderValidation && !folderValidation.valid && (
+            <div style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid var(--color-warning-dim)', padding: '8px 12px', borderRadius: '4px', fontSize: '11.5px', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangle size={14} />
+              <span>Folder Validation Notice: {folderValidation.error}</span>
+            </div>
+          )}
+          {folderValidation && folderValidation.valid && (
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <CheckCircle2 size={12} color="var(--accent)" />
+              <span>Directory validated non-recursively: {folderValidation.fileCount} supported photographs found. {folderValidation.capped ? '(Scan limit of 5,000 entries reached)' : ''}</span>
+            </div>
+          )}
           {nativeDirectory?.imageFiles && nativeDirectory.imageFiles.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px', maxHeight: '160px', overflowY: 'auto' }}>
               {nativeDirectory.imageFiles.slice(0, 48).map((img, i) => (

@@ -8,6 +8,8 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { execFile } = require('child_process');
 
 // Single instance lock to prevent duplicate desktop processes
 const gotTheLock = app.requestSingleInstanceLock();
@@ -41,6 +43,421 @@ const toCanonicalPath = (p) => {
 
 // In-memory allowlist of paths explicitly authorized through native user dialogs
 const authorizedPlyPaths = new Set();
+
+// ------------------------------------------------------------------------------
+// Sprint 6A: Environment Detection & Image Directory Validation
+// ------------------------------------------------------------------------------
+
+// Allowlisted executable names (case-insensitive check)
+const ALLOWED_COLMAP_NAMES = new Set(['colmap.exe', 'colmap']);
+const ALLOWED_OPENMVS_NAMES = new Set([
+  'interfacecolmap.exe',
+  'densifypointcloud.exe',
+  'reconstructmesh.exe',
+  'refinemesh.exe',
+  'texturemesh.exe',
+  'interfacecolmap',
+  'densifypointcloud',
+  'reconstructmesh',
+  'refinemesh',
+  'texturemesh',
+]);
+
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.bmp']);
+const MAX_DIRECTORY_SCAN_ENTRIES = 5000;
+
+/**
+ * Validate candidate binary executable against an allowlist of approved filenames.
+ * Enforces regular file check, symlink rejection, and Windows .exe extension check.
+ */
+function validateBinaryExecutable(candidatePath, allowedBaseNames) {
+  if (typeof candidatePath !== 'string' || !candidatePath.trim() || candidatePath.includes('\0')) {
+    return null;
+  }
+  const resolved = path.normalize(path.resolve(candidatePath.trim()));
+  const ext = path.extname(resolved).toLowerCase();
+  if (process.platform === 'win32' && ext !== '.exe') {
+    return null;
+  }
+  const baseName = path.basename(resolved).toLowerCase();
+  if (!allowedBaseNames.has(baseName)) {
+    return null;
+  }
+  try {
+    const lstat = fs.lstatSync(resolved);
+    if (!lstat.isSymbolicLink() && lstat.isFile()) {
+      return resolved;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Find exact binary name within system PATH without executing arbitrary files
+ */
+function findBinaryInPath(binaryName) {
+  const pathEnv = process.env.PATH || '';
+  const dirs = pathEnv.split(path.delimiter);
+  for (const dir of dirs) {
+    if (!dir || !dir.trim()) continue;
+    try {
+      const candidate = path.join(dir.trim(), binaryName);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Generate conservative list of known candidate installation paths for COLMAP
+ */
+function getColmapCandidates(customPath) {
+  const candidates = [];
+  if (customPath && typeof customPath === 'string') {
+    candidates.push(customPath);
+  }
+  const fromPath = findBinaryInPath('colmap.exe') || findBinaryInPath('colmap');
+  if (fromPath) candidates.push(fromPath);
+
+  const home = os.homedir();
+  const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+
+  candidates.push(
+    path.join(progFiles, 'COLMAP', 'bin', 'colmap.exe'),
+    path.join(progFiles, 'COLMAP', 'colmap.exe'),
+    path.join(progFilesX86, 'COLMAP', 'bin', 'colmap.exe'),
+    'C:\\COLMAP\\bin\\colmap.exe',
+    'C:\\COLMAP\\colmap.exe',
+    'C:\\tools\\colmap\\bin\\colmap.exe',
+    'C:\\tools\\colmap\\colmap.exe',
+    path.join(home, 'Downloads', 'colmap-x64-windows-nocuda', 'bin', 'colmap.exe'),
+    path.join(home, 'Downloads', 'colmap-x64-windows-cuda', 'bin', 'colmap.exe'),
+    path.join(home, 'Downloads', 'COLMAP', 'bin', 'colmap.exe'),
+    path.join(home, 'Downloads', 'COLMAP', 'colmap.exe'),
+    path.join(home, 'scoop', 'apps', 'colmap', 'current', 'colmap.exe'),
+    path.join(home, 'colmap', 'bin', 'colmap.exe'),
+    'C:\\ProgramData\\chocolatey\\bin\\colmap.exe'
+  );
+
+  return candidates;
+}
+
+/**
+ * Generate conservative list of known candidate installation paths for OpenMVS
+ */
+function getOpenMvsCandidates(customPath) {
+  const candidates = [];
+  if (customPath && typeof customPath === 'string') {
+    candidates.push(customPath);
+  }
+  const fromPath = findBinaryInPath('InterfaceCOLMAP.exe') || findBinaryInPath('DensifyPointCloud.exe');
+  if (fromPath) candidates.push(fromPath);
+
+  const home = os.homedir();
+  const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+
+  candidates.push(
+    path.join(progFiles, 'OpenMVS', 'bin', 'InterfaceCOLMAP.exe'),
+    path.join(progFiles, 'OpenMVS', 'InterfaceCOLMAP.exe'),
+    path.join(progFiles, 'openMVS', 'InterfaceCOLMAP.exe'),
+    'C:\\OpenMVS\\bin\\InterfaceCOLMAP.exe',
+    'C:\\OpenMVS\\InterfaceCOLMAP.exe',
+    'C:\\openMVS\\InterfaceCOLMAP.exe',
+    'C:\\tools\\OpenMVS\\InterfaceCOLMAP.exe',
+    path.join(home, 'Downloads', 'OpenMVS_Windows_x64', 'vc17', 'x64', 'Release', 'InterfaceCOLMAP.exe'),
+    path.join(home, 'Downloads', 'OpenMVS_Windows_x64', 'InterfaceCOLMAP.exe'),
+    path.join(home, 'Downloads', 'OpenMVS', 'bin', 'InterfaceCOLMAP.exe'),
+    path.join(home, 'Downloads', 'OpenMVS', 'InterfaceCOLMAP.exe'),
+    path.join(home, 'openmvs', 'bin', 'InterfaceCOLMAP.exe')
+  );
+
+  return candidates;
+}
+
+/**
+ * Query version banner from COLMAP executable with bounded timeout and no shell
+ */
+function queryColmapVersion(executablePath) {
+  return new Promise((resolve) => {
+    execFile(
+      executablePath,
+      ['-h'],
+      { shell: false, timeout: 4000, maxBuffer: 256 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (err && err.code === 'ETIMEDOUT') {
+          return resolve({
+            detected: false,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: null,
+            status: 'Timeout',
+            error: 'Process timed out querying version.',
+          });
+        }
+        const output = (stdout || '') + (stderr || '');
+        const match = output.match(/COLMAP\s+([\d.]+)/i);
+        const version = match ? match[1] : null;
+        resolve({
+          detected: true,
+          path: executablePath,
+          name: path.basename(executablePath),
+          version,
+          rawBanner: output.split('\n')[0].trim() || 'COLMAP Executable',
+          status: 'Ready',
+          error: null,
+        });
+      }
+    );
+  });
+}
+
+/**
+ * Query version banner from OpenMVS executable in isolated temp dir with bounded timeout
+ */
+function queryOpenMvsVersion(executablePath) {
+  return new Promise((resolve) => {
+    let tempDir = null;
+    try {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aeromorph-omvs-'));
+    } catch {
+      tempDir = os.tmpdir();
+    }
+
+    execFile(
+      executablePath,
+      ['-h'],
+      { cwd: tempDir, shell: false, timeout: 4000, maxBuffer: 256 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        let output = (stdout || '') + (stderr || '');
+        if (tempDir) {
+          try {
+            const files = fs.readdirSync(tempDir);
+            for (const f of files) {
+              if (f.endsWith('.log')) {
+                const logPath = path.join(tempDir, f);
+                try {
+                  const logContent = fs.readFileSync(logPath, 'utf8');
+                  output += '\n' + logContent;
+                  fs.unlinkSync(logPath);
+                } catch {}
+              }
+            }
+            try { fs.rmdirSync(tempDir); } catch {}
+          } catch {}
+        }
+
+        if (err && err.code === 'ETIMEDOUT') {
+          return resolve({
+            detected: false,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: null,
+            status: 'Timeout',
+            error: 'Process timed out querying version.',
+          });
+        }
+
+        const match = output.match(/OpenMVS\s+.*v([\d.]+)/i) || output.match(/OpenMVS\s+.*v?([\d.]+)/i);
+        const version = match ? match[1] : null;
+        const bannerMatch = output.match(/OpenMVS[^\r\n]+/i);
+        resolve({
+          detected: true,
+          path: executablePath,
+          name: path.basename(executablePath),
+          version,
+          rawBanner: bannerMatch ? bannerMatch[0].trim() : 'OpenMVS Executable',
+          status: 'Ready',
+          error: null,
+        });
+      }
+    );
+  });
+}
+
+/**
+ * Perform safe detection of COLMAP
+ */
+async function detectColmapTool(customPath) {
+  const candidates = getColmapCandidates(customPath);
+  for (const candidate of candidates) {
+    const valid = validateBinaryExecutable(candidate, ALLOWED_COLMAP_NAMES);
+    if (valid) {
+      return await queryColmapVersion(valid);
+    }
+  }
+  return {
+    detected: false,
+    path: null,
+    name: null,
+    version: null,
+    status: 'Not Detected',
+    error: 'COLMAP executable (colmap.exe) was not found in standard paths or PATH. Please configure path.',
+  };
+}
+
+/**
+ * Perform safe detection of OpenMVS
+ */
+async function detectOpenMvsTool(customPath) {
+  const candidates = getOpenMvsCandidates(customPath);
+  for (const candidate of candidates) {
+    const valid = validateBinaryExecutable(candidate, ALLOWED_OPENMVS_NAMES);
+    if (valid) {
+      return await queryOpenMvsVersion(valid);
+    }
+  }
+  return {
+    detected: false,
+    path: null,
+    name: null,
+    version: null,
+    status: 'Not Detected',
+    error: 'OpenMVS executable (InterfaceCOLMAP.exe) was not found in standard paths or PATH. Please configure path.',
+  };
+}
+
+/**
+ * Validate and count source photograph directory entries non-recursively
+ */
+async function validateAndCountImageDirectory(rawDirPath) {
+  if (typeof rawDirPath !== 'string' || !rawDirPath.trim() || rawDirPath.includes('\0')) {
+    return {
+      valid: false,
+      accessible: false,
+      path: null,
+      fileCount: 0,
+      totalSizeBytes: 0,
+      imageFiles: [],
+      error: 'Invalid directory path argument.',
+    };
+  }
+
+  const dirPath = path.normalize(path.resolve(rawDirPath.trim()));
+
+  let lstat;
+  try {
+    lstat = await fs.promises.lstat(dirPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return {
+        valid: false,
+        accessible: false,
+        path: dirPath,
+        fileCount: 0,
+        totalSizeBytes: 0,
+        imageFiles: [],
+        error: 'Directory does not exist or has been moved.',
+      };
+    }
+    return {
+      valid: false,
+      accessible: false,
+      path: dirPath,
+      fileCount: 0,
+      totalSizeBytes: 0,
+      imageFiles: [],
+      error: `Directory access error: ${err.message}`,
+    };
+  }
+
+  if (lstat.isSymbolicLink()) {
+    return {
+      valid: false,
+      accessible: false,
+      path: dirPath,
+      fileCount: 0,
+      totalSizeBytes: 0,
+      imageFiles: [],
+      error: 'Symbolic link directories are not supported for security reasons.',
+    };
+  }
+
+  if (!lstat.isDirectory()) {
+    return {
+      valid: false,
+      accessible: false,
+      path: dirPath,
+      fileCount: 0,
+      totalSizeBytes: 0,
+      imageFiles: [],
+      error: 'Selected path is not a directory.',
+    };
+  }
+
+  // Shallow non-recursive read of directory entries
+  let entries;
+  try {
+    entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    return {
+      valid: false,
+      accessible: false,
+      path: dirPath,
+      fileCount: 0,
+      totalSizeBytes: 0,
+      imageFiles: [],
+      error: `Failed to read directory contents: ${err.message}`,
+    };
+  }
+
+  const imageFiles = [];
+  let totalSizeBytes = 0;
+  const scanLimit = Math.min(entries.length, MAX_DIRECTORY_SCAN_ENTRIES);
+
+  for (let i = 0; i < scanLimit; i++) {
+    const entry = entries[i];
+    // Ignore subdirectories and non-files
+    if (entry.isFile()) {
+      const ext = path.extname(entry.name).toLowerCase();
+      if (SUPPORTED_IMAGE_EXTENSIONS.has(ext)) {
+        try {
+          const entryPath = path.join(dirPath, entry.name);
+          const fileLstat = await fs.promises.lstat(entryPath);
+          if (!fileLstat.isSymbolicLink()) {
+            totalSizeBytes += fileLstat.size;
+            imageFiles.push({
+              name: entry.name,
+              size: fileLstat.size,
+            });
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+    }
+  }
+
+  if (imageFiles.length === 0) {
+    return {
+      valid: false,
+      accessible: true,
+      path: dirPath,
+      name: path.basename(dirPath),
+      fileCount: 0,
+      totalSizeBytes: 0,
+      imageFiles: [],
+      error: 'Selected folder contains no supported photographs (.jpg, .jpeg, .png, .webp, .tif, .tiff, .bmp).',
+      capped: entries.length > MAX_DIRECTORY_SCAN_ENTRIES,
+    };
+  }
+
+  return {
+    valid: true,
+    accessible: true,
+    path: dirPath,
+    name: path.basename(dirPath),
+    fileCount: imageFiles.length,
+    totalSizeBytes,
+    imageFiles: imageFiles.slice(0, 100),
+    capped: entries.length > MAX_DIRECTORY_SCAN_ENTRIES,
+    error: null,
+  };
+}
 
 /**
  * Create the primary desktop application window
@@ -158,64 +575,26 @@ ipcMain.handle('dialog:selectImageDirectory', async () => {
       return { canceled: true };
     }
 
-    const rawPath = result.filePaths[0];
-    if (typeof rawPath !== 'string' || rawPath.includes('\0')) {
-      return { canceled: true, error: 'Invalid directory path.' };
-    }
-
-    const dirPath = path.normalize(path.resolve(rawPath));
-
-    const lstat = await fs.promises.lstat(dirPath);
-    if (lstat.isSymbolicLink()) {
-      return { canceled: true, error: 'Symbolic link directories are not supported for security reasons.' };
-    }
-    if (!lstat.isDirectory()) {
-      return { canceled: true, error: 'Selected path is not a directory.' };
-    }
-
-    // Shallow non-recursive read of directory entries (bounded to first 5,000 files to avoid locking thread)
-    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-    const imageExtensions = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.bmp']);
-
-    const imageFiles = [];
-    let totalSizeBytes = 0;
-    const maxEntries = Math.min(entries.length, 5000);
-
-    for (let i = 0; i < maxEntries; i++) {
-      const entry = entries[i];
-      if (entry.isFile()) {
-        const ext = path.extname(entry.name).toLowerCase();
-        if (imageExtensions.has(ext)) {
-          try {
-            const entryPath = path.join(dirPath, entry.name);
-            const fileLstat = await fs.promises.lstat(entryPath);
-            if (!fileLstat.isSymbolicLink()) {
-              totalSizeBytes += fileLstat.size;
-              imageFiles.push({
-                name: entry.name,
-                size: fileLstat.size,
-              });
-            }
-          } catch {
-            // Skip unreadable files
-          }
-        }
-      }
+    const validation = await validateAndCountImageDirectory(result.filePaths[0]);
+    if (!validation.accessible) {
+      return { canceled: true, error: validation.error };
     }
 
     return {
       canceled: false,
-      path: dirPath,
-      name: path.basename(dirPath),
-      fileCount: imageFiles.length,
-      totalSizeBytes,
-      // Provide bounded metadata array (first 100 max) to keep IPC payload lightweight
-      imageFiles: imageFiles.slice(0, 100),
+      ...validation,
     };
   } catch (err) {
     console.error('Aeromorph Desktop: Error selecting directory:', err);
     return { canceled: true, error: err.message };
   }
+});
+
+/**
+ * 2b. Direct Source Directory Validation without Native Dialog
+ */
+ipcMain.handle('system:validateImageDirectory', async (event, directoryPath) => {
+  return await validateAndCountImageDirectory(directoryPath);
 });
 
 /**
@@ -375,6 +754,98 @@ ipcMain.handle('system:checkExecutablePaths', async (event, { colmapPath, openmv
   }
 
   return result;
+});
+
+/**
+ * 6. Sprint 6A: Full Environment & Toolchain Detection
+ * Queries version information using bounded read-only subprocess invocations.
+ */
+ipcMain.handle('system:detectEnvironment', async (event, { customColmapPath, customOpenmvsPath } = {}) => {
+  const colmap = await detectColmapTool(customColmapPath);
+  const openmvs = await detectOpenMvsTool(customOpenmvsPath);
+
+  return {
+    colmap,
+    openmvs,
+    environmentReady: Boolean(colmap.detected && openmvs.detected),
+  };
+});
+
+/**
+ * 7. Native File Picker for user-configured COLMAP executable
+ */
+ipcMain.handle('dialog:selectColmapExecutable', async () => {
+  if (!mainWindow) return { canceled: true };
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select COLMAP Executable (colmap.exe)',
+      properties: ['openFile', 'dontAddToRecent'],
+      filters: [
+        { name: 'COLMAP Executable (colmap.exe)', extensions: ['exe'] },
+        { name: 'All Executables (*.exe)', extensions: ['exe'] },
+      ],
+    });
+
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const selected = result.filePaths[0];
+    const valid = validateBinaryExecutable(selected, ALLOWED_COLMAP_NAMES);
+    if (!valid) {
+      return {
+        canceled: true,
+        error: 'Selected file is not an allowed COLMAP executable (expected colmap.exe).',
+      };
+    }
+
+    const queryResult = await queryColmapVersion(valid);
+    return {
+      canceled: false,
+      ...queryResult,
+    };
+  } catch (err) {
+    console.error('Aeromorph Desktop: Error selecting COLMAP executable:', err);
+    return { canceled: true, error: err.message };
+  }
+});
+
+/**
+ * 8. Native File Picker for user-configured OpenMVS executable
+ */
+ipcMain.handle('dialog:selectOpenMvsExecutable', async () => {
+  if (!mainWindow) return { canceled: true };
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select OpenMVS Executable (InterfaceCOLMAP.exe or DensifyPointCloud.exe)',
+      properties: ['openFile', 'dontAddToRecent'],
+      filters: [
+        { name: 'OpenMVS Executable (*.exe)', extensions: ['exe'] },
+      ],
+    });
+
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const selected = result.filePaths[0];
+    const valid = validateBinaryExecutable(selected, ALLOWED_OPENMVS_NAMES);
+    if (!valid) {
+      return {
+        canceled: true,
+        error: 'Selected file is not an allowed OpenMVS executable (expected InterfaceCOLMAP.exe or DensifyPointCloud.exe).',
+      };
+    }
+
+    const queryResult = await queryOpenMvsVersion(valid);
+    return {
+      canceled: false,
+      ...queryResult,
+    };
+  } catch (err) {
+    console.error('Aeromorph Desktop: Error selecting OpenMVS executable:', err);
+    return { canceled: true, error: err.message };
+  }
 });
 
 // ------------------------------------------------------------------------------

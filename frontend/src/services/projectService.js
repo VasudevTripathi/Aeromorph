@@ -13,6 +13,7 @@
 
 const STORAGE_KEY_PROJECTS = 'aeromorph_projects_v1';
 const STORAGE_KEY_ACTIVE_ID = 'aeromorph_active_project_id';
+const STORAGE_KEY_TOOL_PATHS = 'aeromorph_custom_tool_paths_v1';
 
 // Module-level in-memory cache for native File handles during the active browser session
 const sessionAssetStore = new Map();
@@ -477,4 +478,42 @@ export function deleteProject(projectId) {
 export function clearProjectSessionAssets(projectId) {
   if (!projectId) return;
   sessionAssetStore.delete(projectId);
+}
+
+/**
+ * Retrieve user-configured custom executable paths from local storage
+ * @returns {{ colmapPath: string|null, openmvsPath: string|null }}
+ */
+export function getCustomToolPaths() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_TOOL_PATHS);
+    if (!raw) return { colmapPath: null, openmvsPath: null };
+    const parsed = JSON.parse(raw);
+    return {
+      colmapPath: typeof parsed.colmapPath === 'string' ? parsed.colmapPath : null,
+      openmvsPath: typeof parsed.openmvsPath === 'string' ? parsed.openmvsPath : null,
+    };
+  } catch {
+    return { colmapPath: null, openmvsPath: null };
+  }
+}
+
+/**
+ * Persist user-configured custom executable paths to local storage
+ * @param {Object} paths - Candidate paths { colmapPath?: string, openmvsPath?: string }
+ * @returns {{ colmapPath: string|null, openmvsPath: string|null }}
+ */
+export function saveCustomToolPaths(paths = {}) {
+  try {
+    const current = getCustomToolPaths();
+    const updated = {
+      colmapPath: paths.colmapPath !== undefined ? paths.colmapPath : current.colmapPath,
+      openmvsPath: paths.openmvsPath !== undefined ? paths.openmvsPath : current.openmvsPath,
+    };
+    localStorage.setItem(STORAGE_KEY_TOOL_PATHS, JSON.stringify(updated));
+    return updated;
+  } catch (err) {
+    console.warn('Aeromorph: Failed to save custom tool paths to localStorage:', err);
+    return paths;
+  }
 }

@@ -120,3 +120,107 @@ export async function checkExecutablePaths(paths = {}) {
     openmvs: { exists: false, path: null },
   };
 }
+
+/**
+ * Detect local COLMAP and OpenMVS executables and query version information (Sprint 6A)
+ * @param {Object} options - Optional candidate paths { customColmapPath?: string, customOpenmvsPath?: string }
+ * @returns {Promise<{ colmap: Object, openmvs: Object, environmentReady: boolean, isBrowserSandbox?: boolean }>}
+ */
+export async function detectEnvironment(options = {}) {
+  if (isElectron && window.aeromorphAPI?.detectEnvironment) {
+    try {
+      return await window.aeromorphAPI.detectEnvironment(options);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Environment detection error:', err);
+      return {
+        colmap: { detected: false, path: null, version: null, status: 'Detection Error', error: err.message },
+        openmvs: { detected: false, path: null, version: null, status: 'Detection Error', error: err.message },
+        environmentReady: false,
+      };
+    }
+  }
+
+  return {
+    colmap: {
+      detected: false,
+      path: null,
+      version: null,
+      status: 'Browser Sandbox',
+      error: 'Local tool detection requires the Aeromorph Desktop application.',
+    },
+    openmvs: {
+      detected: false,
+      path: null,
+      version: null,
+      status: 'Browser Sandbox',
+      error: 'Local tool detection requires the Aeromorph Desktop application.',
+    },
+    environmentReady: false,
+    isBrowserSandbox: true,
+  };
+}
+
+/**
+ * Prompt user to select COLMAP executable (colmap.exe) via native file dialog
+ * @returns {Promise<{ canceled: boolean, path?: string, version?: string, error?: string }>}
+ */
+export async function selectColmapExecutable() {
+  if (isElectron && window.aeromorphAPI?.selectColmapExecutable) {
+    try {
+      return await window.aeromorphAPI.selectColmapExecutable();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting COLMAP executable:', err);
+      return { canceled: true, error: err.message };
+    }
+  }
+
+  return {
+    canceled: true,
+    error: 'Executable selection requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Prompt user to select OpenMVS executable via native file dialog
+ * @returns {Promise<{ canceled: boolean, path?: string, version?: string, error?: string }>}
+ */
+export async function selectOpenMvsExecutable() {
+  if (isElectron && window.aeromorphAPI?.selectOpenMvsExecutable) {
+    try {
+      return await window.aeromorphAPI.selectOpenMvsExecutable();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting OpenMVS executable:', err);
+      return { canceled: true, error: err.message };
+    }
+  }
+
+  return {
+    canceled: true,
+    error: 'Executable selection requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Validate a source photograph directory path non-recursively
+ * @param {string} dirPath - Candidate directory path
+ * @returns {Promise<{ valid: boolean, accessible: boolean, path?: string, name?: string, fileCount: number, totalSizeBytes: number, imageFiles: Array<{ name: string, size: number }>, error?: string }>}
+ */
+export async function validateImageDirectory(dirPath) {
+  if (isElectron && window.aeromorphAPI?.validateImageDirectory) {
+    try {
+      return await window.aeromorphAPI.validateImageDirectory(dirPath);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Directory validation error:', err);
+      return { valid: false, accessible: false, error: err.message, fileCount: 0, totalSizeBytes: 0, imageFiles: [] };
+    }
+  }
+
+  return {
+    valid: false,
+    accessible: false,
+    error: 'Native directory validation requires the Aeromorph Desktop application.',
+    fileCount: 0,
+    totalSizeBytes: 0,
+    imageFiles: [],
+  };
+}
