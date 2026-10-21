@@ -12,6 +12,7 @@ import {
   setProjectSourceImages,
   setProjectModelFile,
   setProjectNativeDirectory,
+  setProjectOutputDirectory,
   setProjectNativePly,
   getSessionAssets,
 } from './services/projectService';
@@ -106,6 +107,14 @@ export default function App() {
     }
   };
 
+  const handleUpdateProjectOutputDirectory = (projectId, dirInfo) => {
+    const updatedProject = setProjectOutputDirectory(projectId, dirInfo);
+    if (updatedProject) {
+      setProjects(getStoredProjects());
+      setSessionTick((t) => t + 1);
+    }
+  };
+
   const handleAttachModelFile = (file) => {
     if (!activeProjectId) return;
     const updatedProject = setProjectModelFile(activeProjectId, file);
@@ -171,6 +180,7 @@ export default function App() {
             projects={projects}
             onUpdateProjectImages={handleUpdateProjectImages}
             onUpdateProjectNativeDirectory={handleUpdateProjectNativeDirectory}
+            onUpdateProjectOutputDirectory={handleUpdateProjectOutputDirectory}
             onProceedToStudio={handleProceedToStudio}
             onNavigateHome={handleNavigateHome}
             onSelectProject={handleSelectProject}
@@ -183,6 +193,7 @@ export default function App() {
             sessionModelFile={sessionModelFile}
             onAttachModelFile={handleAttachModelFile}
             onAttachNativePly={handleAttachNativePly}
+            onUpdateProjectOutputDirectory={handleUpdateProjectOutputDirectory}
             onNavigateHome={handleNavigateHome}
             onNavigateImport={handleNavigateImport}
           />

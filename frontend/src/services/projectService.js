@@ -104,6 +104,11 @@ export function getStoredProjects() {
           lastModified: Number.isFinite(p.modelFileReference.lastModified) ? p.modelFileReference.lastModified : null,
           updatedAt: typeof p.modelFileReference.updatedAt === 'string' ? p.modelFileReference.updatedAt : new Date().toISOString(),
         } : null,
+        outputDirectoryReference: (p.outputDirectoryReference && typeof p.outputDirectoryReference === 'object') ? {
+          name: typeof p.outputDirectoryReference.name === 'string' ? p.outputDirectoryReference.name : 'Workspace',
+          path: typeof p.outputDirectoryReference.path === 'string' ? p.outputDirectoryReference.path : null,
+          updatedAt: typeof p.outputDirectoryReference.updatedAt === 'string' ? p.outputDirectoryReference.updatedAt : new Date().toISOString(),
+        } : null,
       }));
   } catch (err) {
     console.warn('Aeromorph: Failed to read projects from localStorage:', err);
@@ -141,6 +146,13 @@ export function saveProjects(projects) {
             sizeBytes: p.modelFileReference.sizeBytes || 0,
             lastModified: p.modelFileReference.lastModified || null,
             updatedAt: p.modelFileReference.updatedAt || new Date().toISOString(),
+          }
+        : null,
+      outputDirectoryReference: p.outputDirectoryReference
+        ? {
+            name: p.outputDirectoryReference.name || 'Workspace',
+            path: typeof p.outputDirectoryReference.path === 'string' ? p.outputDirectoryReference.path : null,
+            updatedAt: p.outputDirectoryReference.updatedAt || new Date().toISOString(),
           }
         : null,
     }));
@@ -364,6 +376,35 @@ export function setProjectNativePly(projectId, { path, name, sizeBytes = 0, last
       lastModified,
       updatedAt: now,
     },
+  };
+
+  projects[index] = updated;
+  saveProjects(projects);
+  return updated;
+}
+
+/**
+ * Attach or update native workspace output directory for a project
+ * @param {string} projectId
+ * @param {{ path: string, name?: string }} dirInfo
+ * @returns {Object|null} The updated project record
+ */
+export function setProjectOutputDirectory(projectId, dirInfo) {
+  if (!projectId) return null;
+
+  const projects = getStoredProjects();
+  const index = projects.findIndex((p) => p.id === projectId);
+  if (index === -1) return null;
+
+  const now = new Date().toISOString();
+  const updated = {
+    ...projects[index],
+    updatedAt: now,
+    outputDirectoryReference: dirInfo && dirInfo.path ? {
+      name: dirInfo.name || 'Workspace',
+      path: dirInfo.path,
+      updatedAt: now,
+    } : null,
   };
 
   projects[index] = updated;

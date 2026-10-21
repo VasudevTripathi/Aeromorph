@@ -101,4 +101,64 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
     }
     return ipcRenderer.invoke('system:validateImageDirectory', dirPath.trim());
   },
+
+  /**
+   * Prompt user with native Windows folder picker for project workspace output directory
+   * @returns {Promise<{ canceled: boolean, path?: string, name?: string, error?: string }>}
+   */
+  selectWorkspaceDirectory: () => ipcRenderer.invoke('dialog:selectWorkspaceDirectory'),
+
+  /**
+   * Launch sparse COLMAP reconstruction pipeline (Sprint 6B)
+   * @param {Object} config - { imageDir: string, outputDir: string, customColmapPath?: string, numThreads?: number }
+   * @returns {Promise<{ success: boolean, jobId?: string, error?: string }>}
+   */
+  startSparseReconstruction: (config = {}) => {
+    if (!config || typeof config !== 'object') {
+      return Promise.reject(new Error('Invalid reconstruction configuration argument.'));
+    }
+    const sanitized = {
+      imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
+      outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
+      customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
+      numThreads: typeof config.numThreads === 'number' ? config.numThreads : 4,
+    };
+    return ipcRenderer.invoke('reconstruction:start', sanitized);
+  },
+
+  /**
+   * Cancel active reconstruction pipeline job
+   * @returns {Promise<{ canceled: boolean, message?: string }>}
+   */
+  cancelSparseReconstruction: () => ipcRenderer.invoke('reconstruction:cancel'),
+
+  /**
+   * Get current reconstruction job status, progress, and buffered logs
+   * @returns {Promise<{ id?: string, status: string, stage?: string, stageLabel?: string, logs: Array }>}
+   */
+  getReconstructionStatus: () => ipcRenderer.invoke('reconstruction:getStatus'),
+
+  /**
+   * Subscribe to live reconstruction progress events
+   * @param {Function} callback - (progressData) => void
+   * @returns {Function} Unsubscribe function
+   */
+  onReconstructionProgress: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const subscription = (_event, data) => callback(data);
+    ipcRenderer.on('reconstruction:progress', subscription);
+    return () => ipcRenderer.removeListener('reconstruction:progress', subscription);
+  },
+
+  /**
+   * Subscribe to live reconstruction log events
+   * @param {Function} callback - (logEntry) => void
+   * @returns {Function} Unsubscribe function
+   */
+  onReconstructionLog: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const subscription = (_event, entry) => callback(entry);
+    ipcRenderer.on('reconstruction:log', subscription);
+    return () => ipcRenderer.removeListener('reconstruction:log', subscription);
+  },
 });

@@ -1,18 +1,176 @@
-import React, { useState } from 'react';
-import { Box, Camera, FolderOpen, ArrowLeft, Clock } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Box, Camera, FolderOpen, ArrowLeft, Clock, HardDrive, CheckCircle2, AlertTriangle, Play, StopCircle } from 'lucide-react';
 import PipelineSidebar from './PipelineSidebar';
 import Viewport3D from './Viewport3D';
 import LogPanel from './LogPanel';
+import {
+  selectWorkspaceDirectory,
+  startSparseReconstruction,
+  cancelSparseReconstruction,
+  getReconstructionStatus,
+  subscribeReconstructionProgress,
+  subscribeReconstructionLog,
+} from '../services/desktopBridge';
 
 export default function ReconstructionStudio({
   currentProject = null,
   sessionModelFile = null,
   onAttachModelFile,
   onAttachNativePly,
+  onUpdateProjectOutputDirectory,
   onNavigateHome,
   onNavigateImport,
 }) {
-  const [activeStage, setActiveStage] = useState('mesh_reconstruction');
+  const [activeStage, setActiveStage] = useState('sparse_reconstruction');
+  const [jobStatus, setJobStatus] = useState('idle'); // 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
+  const [activeStageKey, setActiveStageKey] = useState(null);
+  const [activeStageLabel, setActiveStageLabel] = useState(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [reconstructionLogs, setReconstructionLogs] = useState([]);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [modelStats, setModelStats] = useState(null);
+
+  // Sync with current reconstruction state on mount
+  useEffect(() => {
+    getReconstructionStatus().then((status) => {
+      if (status && status.status && status.status !== 'idle') {
+        setJobStatus(status.status);
+        setActiveStageKey(status.stage);
+        setActiveStageLabel(status.stageLabel);
+        if (status.elapsedMs) {
+          setElapsedSeconds(Math.floor(status.elapsedMs / 1000));
+        }
+        if (status.logs && status.logs.length > 0) {
+          setReconstructionLogs(status.logs);
+        }
+        if (status.modelStats) {
+          setModelStats(status.modelStats);
+        }
+        if (status.error) {
+          setErrorMessage(status.error);
+        }
+      }
+    });
+  }, []);
+
+  // Subscribe to progress and log updates
+  useEffect(() => {
+    const unsubProgress = subscribeReconstructionProgress((data) => {
+      if (!data) return;
+      if (data.status) setJobStatus(data.status);
+      if (data.stage) setActiveStageKey(data.stage);
+      if (data.stageLabel) setActiveStageLabel(data.stageLabel);
+      if (data.elapsedMs != null) {
+        setElapsedSeconds(Math.floor(data.elapsedMs / 1000));
+      }
+
+      if (data.status === 'completed') {
+        setModelStats(data.modelStats || null);
+        if (data.plyPath && onAttachNativePly) {
+          onAttachNativePly({
+            path: data.plyPath,
+            name: 'sparse.ply',
+            sizeBytes: data.modelStats?.pointsSize || 0,
+            lastModified: Date.now(),
+          });
+        }
+      }
+
+      if (data.status === 'failed') {
+        setErrorMessage(data.error || 'Reconstruction failed.');
+      }
+    });
+
+    const unsubLog = subscribeReconstructionLog((entry) => {
+      setReconstructionLogs((prev) => {
+        const next = [...prev, entry];
+        return next.length > 500 ? next.slice(-500) : next;
+      });
+    });
+
+    return () => {
+      unsubProgress();
+      unsubLog();
+    };
+  }, [onAttachNativePly]);
+
+  // Elapsed timer when job is running
+  useEffect(() => {
+    let timer = null;
+    if (jobStatus === 'running') {
+      timer = setInterval(() => {
+        setElapsedSeconds((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [jobStatus]);
+
+  // Handle workspace folder selection
+  const handleSelectWorkspace = async () => {
+    if (!currentProject) return null;
+    const res = await selectWorkspaceDirectory();
+    if (res.canceled) return null;
+    if (res.error) {
+      alert(`Workspace selection error: ${res.error}`);
+      return null;
+    }
+    if (res.path && onUpdateProjectOutputDirectory) {
+      onUpdateProjectOutputDirectory(currentProject.id, res);
+      return res.path;
+    }
+    return null;
+  };
+
+  // Launch sparse reconstruction pipeline
+  const handleStartPipeline = async () => {
+    if (!currentProject) {
+      alert('Please create or select an active project first.');
+      return;
+    }
+
+    const imageDir = currentProject.sourceDirectoryReference?.path;
+    if (!imageDir) {
+      if (window.confirm('No source photographs directory is attached to this project. Navigate to Import Photographs screen to select photos?')) {
+        onNavigateImport();
+      }
+      return;
+    }
+
+    let outputDir = currentProject.outputDirectoryReference?.path;
+    if (!outputDir) {
+      alert('Please select a dedicated output workspace folder for COLMAP files.');
+      outputDir = await handleSelectWorkspace();
+      if (!outputDir) return; // User canceled
+    }
+
+    // Reset logs and error
+    setReconstructionLogs([]);
+    setErrorMessage(null);
+    setElapsedSeconds(0);
+    setJobStatus('running');
+
+    const result = await startSparseReconstruction({
+      imageDir,
+      outputDir,
+      numThreads: 4,
+    });
+
+    if (!result.success) {
+      setJobStatus('failed');
+      setErrorMessage(result.error);
+      alert(`Failed to start reconstruction: ${result.error}`);
+    }
+  };
+
+  // Cancel running pipeline
+  const handleCancelPipeline = async () => {
+    if (window.confirm('Cancel active COLMAP reconstruction? Any running subprocesses will be terminated.')) {
+      await cancelSparseReconstruction();
+      setJobStatus('cancelled');
+    }
+  };
 
   const formatFileSize = (bytes) => {
     if (!bytes || bytes === 0) return '0 B';
@@ -29,6 +187,12 @@ export default function ReconstructionStudio({
         activeStage={activeStage}
         onSelectStage={setActiveStage}
         currentProject={currentProject}
+        jobStatus={jobStatus}
+        activeStageKey={activeStageKey}
+        elapsedSeconds={elapsedSeconds}
+        onStartPipeline={handleStartPipeline}
+        onCancelPipeline={handleCancelPipeline}
+        onSelectWorkspace={handleSelectWorkspace}
       />
 
       {/* Central 3D Viewport with Floating Controls & Overlays */}
@@ -62,9 +226,18 @@ export default function ReconstructionStudio({
             </div>
 
             {currentProject?.sourceDirectoryReference && (
-              <span className="studio-asset-pill photos" title={`Source: ${currentProject.sourceDirectoryReference.name}`}>
+              <span className="studio-asset-pill photos" title={`Source: ${currentProject.sourceDirectoryReference.path || currentProject.sourceDirectoryReference.name}`}>
                 <Camera size={11} />
                 <span>{currentProject.sourceDirectoryReference.fileCount} photos</span>
+              </span>
+            )}
+
+            {currentProject?.outputDirectoryReference && (
+              <span className="studio-asset-pill" style={{ background: 'rgba(213, 255, 101, 0.08)', color: 'var(--accent)', border: '1px solid rgba(213, 255, 101, 0.2)' }} title={`Workspace: ${currentProject.outputDirectoryReference.path}`}>
+                <HardDrive size={11} />
+                <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {currentProject.outputDirectoryReference.name}
+                </span>
               </span>
             )}
 
@@ -77,6 +250,19 @@ export default function ReconstructionStudio({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {currentProject && !currentProject.outputDirectoryReference && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: '11px', padding: '3px 8px' }}
+                onClick={handleSelectWorkspace}
+                title="Select a dedicated folder for reconstruction output"
+              >
+                <FolderOpen size={12} />
+                <span>Set Workspace...</span>
+              </button>
+            )}
+
             {currentProject && (
               <button
                 type="button"
@@ -92,6 +278,14 @@ export default function ReconstructionStudio({
           </div>
         </div>
 
+        {/* Status notification banner if failed or error */}
+        {errorMessage && (
+          <div style={{ background: 'rgba(239, 68, 68, 0.12)', borderBottom: '1px solid var(--color-danger, #ef4444)', padding: '6px 14px', fontSize: '11.5px', color: 'var(--color-danger, #f87171)', display: 'flex', alignItems: 'center', gap: '8px', zIndex: 10 }}>
+            <AlertTriangle size={13} />
+            <span>Reconstruction Error: {errorMessage}</span>
+          </div>
+        )}
+
         {/* 3D WebGL Viewport */}
         <Viewport3D
           currentProject={currentProject}
@@ -101,7 +295,11 @@ export default function ReconstructionStudio({
         />
 
         {/* Bottom Collapsible Pipeline Output & Console */}
-        <LogPanel />
+        <LogPanel
+          externalLogs={reconstructionLogs}
+          currentStage={activeStageLabel}
+          jobStatus={jobStatus}
+        />
       </div>
     </div>
   );

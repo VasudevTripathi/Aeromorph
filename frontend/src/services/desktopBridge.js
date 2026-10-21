@@ -224,3 +224,102 @@ export async function validateImageDirectory(dirPath) {
     imageFiles: [],
   };
 }
+
+/**
+ * Prompt user to select project workspace output directory via native dialog
+ * @returns {Promise<{ canceled: boolean, path?: string, name?: string, error?: string }>}
+ */
+export async function selectWorkspaceDirectory() {
+  if (isElectron && window.aeromorphAPI?.selectWorkspaceDirectory) {
+    try {
+      return await window.aeromorphAPI.selectWorkspaceDirectory();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting workspace directory:', err);
+      return { canceled: true, error: err.message };
+    }
+  }
+
+  return {
+    canceled: true,
+    error: 'Workspace folder selection requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Launch sparse reconstruction job (Sprint 6B)
+ * @param {Object} config - { imageDir: string, outputDir: string, customColmapPath?: string, numThreads?: number }
+ * @returns {Promise<{ success: boolean, jobId?: string, error?: string }>}
+ */
+export async function startSparseReconstruction(config) {
+  if (isElectron && window.aeromorphAPI?.startSparseReconstruction) {
+    try {
+      return await window.aeromorphAPI.startSparseReconstruction(config);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to start sparse reconstruction:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Reconstruction pipeline execution requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Cancel active reconstruction job
+ * @returns {Promise<{ canceled: boolean, message?: string }>}
+ */
+export async function cancelSparseReconstruction() {
+  if (isElectron && window.aeromorphAPI?.cancelSparseReconstruction) {
+    try {
+      return await window.aeromorphAPI.cancelSparseReconstruction();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to cancel reconstruction:', err);
+      return { canceled: false, error: err.message };
+    }
+  }
+
+  return { canceled: false, error: 'Reconstruction cancellation requires the Aeromorph Desktop application.' };
+}
+
+/**
+ * Query current reconstruction job status
+ * @returns {Promise<{ id?: string, status: string, stage?: string, stageLabel?: string, logs: Array }>}
+ */
+export async function getReconstructionStatus() {
+  if (isElectron && window.aeromorphAPI?.getReconstructionStatus) {
+    try {
+      return await window.aeromorphAPI.getReconstructionStatus();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to get reconstruction status:', err);
+      return { status: 'idle', logs: [] };
+    }
+  }
+
+  return { status: 'idle', logs: [] };
+}
+
+/**
+ * Subscribe to reconstruction progress events
+ * @param {Function} callback - (progressData) => void
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeReconstructionProgress(callback) {
+  if (isElectron && window.aeromorphAPI?.onReconstructionProgress) {
+    return window.aeromorphAPI.onReconstructionProgress(callback);
+  }
+  return () => {};
+}
+
+/**
+ * Subscribe to reconstruction log streaming events
+ * @param {Function} callback - (logEntry) => void
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeReconstructionLog(callback) {
+  if (isElectron && window.aeromorphAPI?.onReconstructionLog) {
+    return window.aeromorphAPI.onReconstructionLog(callback);
+  }
+  return () => {};
+}

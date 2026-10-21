@@ -9,7 +9,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile } = require('child_process');
+const { execFile, spawn, spawnSync } = require('child_process');
 
 // Single instance lock to prevent duplicate desktop processes
 const gotTheLock = app.requestSingleInstanceLock();
@@ -184,12 +184,17 @@ function getOpenMvsCandidates(customPath) {
  */
 function queryColmapVersion(executablePath) {
   return new Promise((resolve) => {
-    execFile(
+    let resolved = false;
+    const child = execFile(
       executablePath,
       ['-h'],
       { shell: false, timeout: 4000, maxBuffer: 256 * 1024, windowsHide: true },
       (err, stdout, stderr) => {
+        if (resolved) return;
+        resolved = true;
+
         if (err && err.code === 'ETIMEDOUT') {
+          try { child.kill('SIGKILL'); } catch {}
           return resolve({
             detected: false,
             path: executablePath,
@@ -199,9 +204,22 @@ function queryColmapVersion(executablePath) {
             error: 'Process timed out querying version.',
           });
         }
+
         const output = (stdout || '') + (stderr || '');
         const match = output.match(/COLMAP\s+([\d.]+)/i);
         const version = match ? match[1] : null;
+
+        if (err && !version && !output.trim()) {
+          return resolve({
+            detected: false,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: null,
+            status: 'Execution Error',
+            error: `Failed to execute binary: ${err.message}`,
+          });
+        }
+
         resolve({
           detected: true,
           path: executablePath,
@@ -225,14 +243,26 @@ function queryOpenMvsVersion(executablePath) {
     try {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aeromorph-omvs-'));
     } catch {
-      tempDir = os.tmpdir();
+      tempDir = null;
     }
 
-    execFile(
+    const cleanupTemp = () => {
+      if (tempDir) {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch {}
+      }
+    };
+
+    let resolved = false;
+    const child = execFile(
       executablePath,
       ['-h'],
-      { cwd: tempDir, shell: false, timeout: 4000, maxBuffer: 256 * 1024, windowsHide: true },
+      { cwd: tempDir || os.tmpdir(), shell: false, timeout: 4000, maxBuffer: 256 * 1024, windowsHide: true },
       (err, stdout, stderr) => {
+        if (resolved) return;
+        resolved = true;
+
         let output = (stdout || '') + (stderr || '');
         if (tempDir) {
           try {
@@ -243,15 +273,15 @@ function queryOpenMvsVersion(executablePath) {
                 try {
                   const logContent = fs.readFileSync(logPath, 'utf8');
                   output += '\n' + logContent;
-                  fs.unlinkSync(logPath);
                 } catch {}
               }
             }
-            try { fs.rmdirSync(tempDir); } catch {}
           } catch {}
+          cleanupTemp();
         }
 
         if (err && err.code === 'ETIMEDOUT') {
+          try { child.kill('SIGKILL'); } catch {}
           return resolve({
             detected: false,
             path: executablePath,
@@ -259,6 +289,17 @@ function queryOpenMvsVersion(executablePath) {
             version: null,
             status: 'Timeout',
             error: 'Process timed out querying version.',
+          });
+        }
+
+        if (err && !output.trim()) {
+          return resolve({
+            detected: false,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: null,
+            status: 'Execution Error',
+            error: `Failed to execute binary: ${err.message}`,
           });
         }
 
@@ -280,14 +321,54 @@ function queryOpenMvsVersion(executablePath) {
 }
 
 /**
+ * Check for required Sprint 6B OpenMVS companion tools without launching them
+ */
+function inspectOpenMvsModules(executablePath) {
+  if (!executablePath) return null;
+  const binDir = path.dirname(executablePath);
+  const toolDefinitions = {
+    interfaceColmap: 'InterfaceCOLMAP.exe',
+    densifyPointCloud: 'DensifyPointCloud.exe',
+    reconstructMesh: 'ReconstructMesh.exe',
+    refineMesh: 'RefineMesh.exe',
+    textureMesh: 'TextureMesh.exe',
+  };
+
+  const modules = {};
+  for (const [key, exeName] of Object.entries(toolDefinitions)) {
+    const candidate = path.join(binDir, exeName);
+    const valid = validateBinaryExecutable(candidate, ALLOWED_OPENMVS_NAMES);
+    modules[key] = {
+      name: exeName,
+      available: Boolean(valid),
+      path: valid || null,
+    };
+  }
+  return modules;
+}
+
+/**
  * Perform safe detection of COLMAP
  */
 async function detectColmapTool(customPath) {
+  let customPathStale = false;
+  if (customPath && typeof customPath === 'string' && customPath.trim()) {
+    if (!validateBinaryExecutable(customPath, ALLOWED_COLMAP_NAMES)) {
+      customPathStale = true;
+    }
+  }
+
   const candidates = getColmapCandidates(customPath);
   for (const candidate of candidates) {
     const valid = validateBinaryExecutable(candidate, ALLOWED_COLMAP_NAMES);
     if (valid) {
-      return await queryColmapVersion(valid);
+      const res = await queryColmapVersion(valid);
+      if (res.detected) {
+        if (customPathStale) {
+          res.warning = `Configured custom path "${customPath}" is invalid or no longer exists. Fallen back to auto-detected binary.`;
+        }
+        return res;
+      }
     }
   }
   return {
@@ -296,19 +377,35 @@ async function detectColmapTool(customPath) {
     name: null,
     version: null,
     status: 'Not Detected',
-    error: 'COLMAP executable (colmap.exe) was not found in standard paths or PATH. Please configure path.',
+    error: customPathStale
+      ? `Configured COLMAP path "${customPath}" was not found or is invalid.`
+      : 'COLMAP executable (colmap.exe) was not found in standard paths or PATH. Please configure path.',
   };
 }
 
 /**
- * Perform safe detection of OpenMVS
+ * Perform safe detection of OpenMVS and inspect companion tools without launching them
  */
 async function detectOpenMvsTool(customPath) {
+  let customPathStale = false;
+  if (customPath && typeof customPath === 'string' && customPath.trim()) {
+    if (!validateBinaryExecutable(customPath, ALLOWED_OPENMVS_NAMES)) {
+      customPathStale = true;
+    }
+  }
+
   const candidates = getOpenMvsCandidates(customPath);
   for (const candidate of candidates) {
     const valid = validateBinaryExecutable(candidate, ALLOWED_OPENMVS_NAMES);
     if (valid) {
-      return await queryOpenMvsVersion(valid);
+      const res = await queryOpenMvsVersion(valid);
+      if (res.detected) {
+        res.pipelineModules = inspectOpenMvsModules(valid);
+        if (customPathStale) {
+          res.warning = `Configured custom path "${customPath}" is invalid or no longer exists. Fallen back to auto-detected binary.`;
+        }
+        return res;
+      }
     }
   }
   return {
@@ -316,8 +413,11 @@ async function detectOpenMvsTool(customPath) {
     path: null,
     name: null,
     version: null,
+    pipelineModules: null,
     status: 'Not Detected',
-    error: 'OpenMVS executable (InterfaceCOLMAP.exe) was not found in standard paths or PATH. Please configure path.',
+    error: customPathStale
+      ? `Configured OpenMVS path "${customPath}" was not found or is invalid.`
+      : 'OpenMVS executable (InterfaceCOLMAP.exe) was not found in standard paths or PATH. Please configure path.',
   };
 }
 
@@ -432,6 +532,11 @@ async function validateAndCountImageDirectory(rawDirPath) {
     }
   }
 
+  const isCapped = entries.length > MAX_DIRECTORY_SCAN_ENTRIES;
+  const capWarning = isCapped
+    ? `Directory entry cap (${MAX_DIRECTORY_SCAN_ENTRIES}) reached. Count reflects only the first ${MAX_DIRECTORY_SCAN_ENTRIES} entries and may be incomplete.`
+    : null;
+
   if (imageFiles.length === 0) {
     return {
       valid: false,
@@ -442,7 +547,8 @@ async function validateAndCountImageDirectory(rawDirPath) {
       totalSizeBytes: 0,
       imageFiles: [],
       error: 'Selected folder contains no supported photographs (.jpg, .jpeg, .png, .webp, .tif, .tiff, .bmp).',
-      capped: entries.length > MAX_DIRECTORY_SCAN_ENTRIES,
+      capped: isCapped,
+      warning: capWarning,
     };
   }
 
@@ -454,8 +560,487 @@ async function validateAndCountImageDirectory(rawDirPath) {
     fileCount: imageFiles.length,
     totalSizeBytes,
     imageFiles: imageFiles.slice(0, 100),
-    capped: entries.length > MAX_DIRECTORY_SCAN_ENTRIES,
+    capped: isCapped,
+    warning: capWarning,
     error: null,
+  };
+}
+
+// ------------------------------------------------------------------------------
+// Sprint 6B: COLMAP Sparse Reconstruction Engine (CPU-only, Cancellable)
+// ------------------------------------------------------------------------------
+
+let activeReconstructionJob = null;
+
+function emitReconstructionProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('reconstruction:progress', payload);
+    } catch {}
+  }
+}
+
+function emitReconstructionLog(entry) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('reconstruction:log', entry);
+    } catch {}
+  }
+}
+
+function terminateProcessTree(child) {
+  if (!child) return;
+  const pid = child.pid;
+  if (!pid) return;
+
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        windowsHide: true,
+        timeout: 5000,
+      });
+    } catch {}
+  }
+
+  try {
+    child.kill('SIGKILL');
+  } catch {}
+}
+
+/**
+ * Validate input image folder and output workspace folder
+ */
+async function validateReconstructionDirectories(rawImageDir, rawOutputDir) {
+  if (typeof rawImageDir !== 'string' || !rawImageDir.trim() || rawImageDir.includes('\0')) {
+    return { valid: false, error: 'Invalid input image directory path argument.' };
+  }
+  if (typeof rawOutputDir !== 'string' || !rawOutputDir.trim() || rawOutputDir.includes('\0')) {
+    return { valid: false, error: 'Invalid output workspace directory path argument.' };
+  }
+
+  const resolvedImageDir = path.normalize(path.resolve(rawImageDir.trim()));
+  const resolvedOutputDir = path.normalize(path.resolve(rawOutputDir.trim()));
+
+  // 1. Validate input image folder non-recursively
+  const imageValidation = await validateAndCountImageDirectory(resolvedImageDir);
+  if (!imageValidation.valid) {
+    return { valid: false, error: `Input photographs error: ${imageValidation.error}` };
+  }
+  if (imageValidation.fileCount < 2) {
+    return { valid: false, error: 'At least 2 supported photographs are required for sparse reconstruction.' };
+  }
+
+  // 2. Reject symbolic link output directory
+  if (fs.existsSync(resolvedOutputDir)) {
+    try {
+      const outStat = fs.lstatSync(resolvedOutputDir);
+      if (outStat.isSymbolicLink()) {
+        return { valid: false, error: 'Output workspace directory cannot be a symbolic link for security reasons.' };
+      }
+      if (!outStat.isDirectory()) {
+        return { valid: false, error: 'Output workspace path exists but is not a directory.' };
+      }
+    } catch (err) {
+      return { valid: false, error: `Output directory error: ${err.message}` };
+    }
+  }
+
+  // 3. Collision and nesting checks
+  const lowerImg = resolvedImageDir.toLowerCase();
+  const lowerOut = resolvedOutputDir.toLowerCase();
+
+  if (lowerImg === lowerOut) {
+    return { valid: false, error: 'Output project directory must be separate from the input photographs directory.' };
+  }
+
+  const relToImg = path.relative(resolvedImageDir, resolvedOutputDir);
+  if (!relToImg.startsWith('..') && !path.isAbsolute(relToImg)) {
+    return { valid: false, error: 'Output workspace cannot be located inside the input photographs directory.' };
+  }
+
+  const relToOut = path.relative(resolvedOutputDir, resolvedImageDir);
+  if (!relToOut.startsWith('..') && !path.isAbsolute(relToOut)) {
+    return { valid: false, error: 'Input photographs directory cannot be located inside the output workspace.' };
+  }
+
+  // 4. Ensure output workspace exists and is writeable
+  try {
+    fs.mkdirSync(resolvedOutputDir, { recursive: true });
+    const probe = path.join(resolvedOutputDir, `.aeromorph_probe_${Date.now()}`);
+    fs.writeFileSync(probe, 'write_test');
+    fs.unlinkSync(probe);
+  } catch (err) {
+    return { valid: false, error: `Cannot write to output workspace directory: ${err.message}` };
+  }
+
+  return {
+    valid: true,
+    imageDir: resolvedImageDir,
+    outputDir: resolvedOutputDir,
+    imageCount: imageValidation.fileCount,
+  };
+}
+
+/**
+ * Build fixed argument arrays for COLMAP sparse stages (shell: false)
+ * Targets Intel i3-1220P CPU-only execution without CUDA.
+ */
+function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath, numThreads = 4 }) {
+  const threadsStr = String(numThreads);
+  switch (stage) {
+    case 'feature_extractor':
+      return [
+        'feature_extractor',
+        '--database_path', databasePath,
+        '--image_path', imagePath,
+        '--FeatureExtraction.use_gpu', '0',
+        '--FeatureExtraction.num_threads', threadsStr,
+      ];
+    case 'exhaustive_matcher':
+      return [
+        'exhaustive_matcher',
+        '--database_path', databasePath,
+        '--FeatureMatching.use_gpu', '0',
+        '--FeatureMatching.num_threads', threadsStr,
+      ];
+    case 'mapper':
+      return [
+        'mapper',
+        '--database_path', databasePath,
+        '--image_path', imagePath,
+        '--output_path', sparseOutputPath,
+        '--Mapper.ba_use_gpu', '0',
+        '--Mapper.num_threads', threadsStr,
+      ];
+    case 'model_converter':
+      return [
+        'model_converter',
+        '--input_path', path.join(sparseOutputPath, '0'),
+        '--output_path', path.join(path.dirname(sparseOutputPath), 'sparse.ply'),
+        '--output_type', 'PLY',
+      ];
+    default:
+      throw new Error(`Unknown COLMAP pipeline stage: ${stage}`);
+  }
+}
+
+/**
+ * Verify whether a valid sparse reconstruction model was produced
+ */
+function verifySparseReconstructionOutput(sparseDir) {
+  if (!fs.existsSync(sparseDir)) {
+    return { valid: false, error: 'Sparse output directory was not created by mapper.' };
+  }
+
+  const modelZero = path.join(sparseDir, '0');
+  if (!fs.existsSync(modelZero)) {
+    return {
+      valid: false,
+      error: 'COLMAP finished, but no sparse model (0/) was reconstructed. Check visual overlap across images.',
+    };
+  }
+
+  const pointsBin = path.join(modelZero, 'points3D.bin');
+  const pointsTxt = path.join(modelZero, 'points3D.txt');
+  const camerasBin = path.join(modelZero, 'cameras.bin');
+  const camerasTxt = path.join(modelZero, 'cameras.txt');
+  const imagesBin = path.join(modelZero, 'images.bin');
+  const imagesTxt = path.join(modelZero, 'images.txt');
+
+  const hasPoints = fs.existsSync(pointsBin) || fs.existsSync(pointsTxt);
+  const hasCameras = fs.existsSync(camerasBin) || fs.existsSync(camerasTxt);
+  const hasImages = fs.existsSync(imagesBin) || fs.existsSync(imagesTxt);
+
+  if (!hasPoints || !hasCameras || !hasImages) {
+    return { valid: false, error: 'Model directory is missing standard COLMAP reconstruction files.' };
+  }
+
+  let pointsSize = 0;
+  try {
+    const stat = fs.statSync(fs.existsSync(pointsBin) ? pointsBin : pointsTxt);
+    pointsSize = stat.size;
+  } catch {}
+
+  if (pointsSize <= 0) {
+    return { valid: false, error: 'Reconstructed sparse model contains 0 3D points.' };
+  }
+
+  return {
+    valid: true,
+    modelDir: modelZero,
+    pointsSize,
+    isBinary: fs.existsSync(pointsBin),
+  };
+}
+
+/**
+ * Run asynchronous sparse reconstruction sequence
+ */
+async function startSparseReconstructionJob({ imageDir, outputDir, customColmapPath, numThreads = 4 }) {
+  // 1. Validate directories
+  const dirCheck = await validateReconstructionDirectories(imageDir, outputDir);
+  if (!dirCheck.valid) {
+    return { success: false, error: dirCheck.error };
+  }
+
+  // 2. Validate COLMAP executable
+  if (customColmapPath && typeof customColmapPath === 'string' && customColmapPath.trim()) {
+    const validCustom = validateBinaryExecutable(customColmapPath, ALLOWED_COLMAP_NAMES);
+    if (!validCustom) {
+      return { success: false, error: `Configured COLMAP executable "${customColmapPath}" was not found or is invalid.` };
+    }
+  }
+
+  const colmapDetection = await detectColmapTool(customColmapPath);
+  if (!colmapDetection.detected || !colmapDetection.path) {
+    return { success: false, error: colmapDetection.error || 'COLMAP executable was not detected.' };
+  }
+
+  const colmapExe = colmapDetection.path;
+  const dbPath = path.join(dirCheck.outputDir, 'database.db');
+  const sparseDir = path.join(dirCheck.outputDir, 'sparse');
+  fs.mkdirSync(sparseDir, { recursive: true });
+
+  const jobId = `job_${Date.now()}`;
+  const logFilePath = path.join(dirCheck.outputDir, 'aeromorph_colmap.log');
+
+  activeReconstructionJob = {
+    id: jobId,
+    status: 'running',
+    stage: 'feature_extractor',
+    stageLabel: 'Feature Extraction (SIFT)',
+    stageIndex: 1,
+    totalStages: 3,
+    startTime: Date.now(),
+    endTime: null,
+    imageDir: dirCheck.imageDir,
+    outputDir: dirCheck.outputDir,
+    databasePath: dbPath,
+    sparseDir: sparseDir,
+    colmapPath: colmapExe,
+    currentProcess: null,
+    logs: [],
+    error: null,
+    modelStats: null,
+    plyPath: null,
+  };
+
+  const logBuffer = activeReconstructionJob.logs;
+
+  const appendJobLog = (stage, msg) => {
+    const timeStr = new Date().toLocaleTimeString();
+    const entry = { time: timeStr, stage, msg: msg.trim() };
+    logBuffer.push(entry);
+    if (logBuffer.length > 500) logBuffer.shift();
+    emitReconstructionLog(entry);
+
+    try {
+      fs.appendFileSync(logFilePath, `[${timeStr}] [${stage.toUpperCase()}] ${msg.trim()}\n`);
+    } catch {}
+  };
+
+  appendJobLog('setup', `Starting Sparse Reconstruction: ${dirCheck.imageCount} photographs`);
+  appendJobLog('setup', `COLMAP: ${colmapExe} (version: ${colmapDetection.version || 'unknown'})`);
+  appendJobLog('setup', `Output Workspace: ${dirCheck.outputDir}`);
+
+  emitReconstructionProgress({
+    jobId,
+    status: 'running',
+    stage: 'feature_extractor',
+    stageLabel: 'Feature Extraction (SIFT)',
+    stageIndex: 1,
+    totalStages: 3,
+    elapsedMs: 0,
+  });
+
+  // Run stages asynchronously in background
+  (async () => {
+    const stages = [
+      { key: 'feature_extractor', label: 'Feature Extraction (SIFT)', num: '01' },
+      { key: 'exhaustive_matcher', label: 'Feature Matching (Exhaustive)', num: '02' },
+      { key: 'mapper', label: 'Sparse Point Cloud (Mapper)', num: '03' },
+    ];
+
+    try {
+      for (let i = 0; i < stages.length; i++) {
+        if (activeReconstructionJob.status === 'cancelled') {
+          appendJobLog('system', 'Job was cancelled before stage execution.');
+          break;
+        }
+
+        const currentStage = stages[i];
+        activeReconstructionJob.stage = currentStage.key;
+        activeReconstructionJob.stageLabel = currentStage.label;
+        activeReconstructionJob.stageIndex = i + 1;
+
+        emitReconstructionProgress({
+          jobId,
+          status: 'running',
+          stage: currentStage.key,
+          stageLabel: currentStage.label,
+          stageIndex: i + 1,
+          totalStages: 3,
+          elapsedMs: Date.now() - activeReconstructionJob.startTime,
+        });
+
+        appendJobLog(currentStage.key, `--- Starting Stage ${currentStage.num}: ${currentStage.label} ---`);
+
+        const args = buildColmapStageArgs(currentStage.key, {
+          databasePath: dbPath,
+          imagePath: dirCheck.imageDir,
+          sparseOutputPath: sparseDir,
+          numThreads,
+        });
+
+        await new Promise((resolve, reject) => {
+          let proc;
+          try {
+            proc = spawn(colmapExe, args, {
+              cwd: dirCheck.outputDir,
+              shell: false,
+              windowsHide: true,
+            });
+          } catch (spawnErr) {
+            return reject(new Error(`Failed to start ${currentStage.key}: ${spawnErr.message}`));
+          }
+
+          activeReconstructionJob.currentProcess = proc;
+
+          proc.stdout.on('data', (chunk) => {
+            const lines = chunk.toString().split(/\r?\n/);
+            for (const l of lines) {
+              if (l.trim()) appendJobLog(currentStage.key, l);
+            }
+          });
+
+          proc.stderr.on('data', (chunk) => {
+            const lines = chunk.toString().split(/\r?\n/);
+            for (const l of lines) {
+              if (l.trim()) appendJobLog(currentStage.key, l);
+            }
+          });
+
+          proc.on('error', (err) => {
+            activeReconstructionJob.currentProcess = null;
+            reject(err);
+          });
+
+          proc.on('close', (code, signal) => {
+            activeReconstructionJob.currentProcess = null;
+            if (activeReconstructionJob.status === 'cancelled') {
+              return resolve({ cancelled: true });
+            }
+            if (code === 0) {
+              appendJobLog(currentStage.key, `Stage ${currentStage.num} finished successfully.`);
+              return resolve({ code });
+            }
+            reject(new Error(`Stage ${currentStage.key} failed with exit code ${code}${signal ? ` (${signal})` : ''}`));
+          });
+        });
+      }
+
+      if (activeReconstructionJob.status === 'cancelled') {
+        appendJobLog('system', 'Sparse reconstruction was cancelled by user.');
+        emitReconstructionProgress({
+          jobId,
+          status: 'cancelled',
+          stage: activeReconstructionJob.stage,
+          stageLabel: activeReconstructionJob.stageLabel,
+          stageIndex: activeReconstructionJob.stageIndex,
+          totalStages: 3,
+          elapsedMs: Date.now() - activeReconstructionJob.startTime,
+          error: 'Pipeline cancelled by user.',
+        });
+        return;
+      }
+
+      // Verify sparse model output
+      appendJobLog('mapper', 'Verifying sparse reconstruction model output...');
+      const verifyRes = verifySparseReconstructionOutput(sparseDir);
+      if (!verifyRes.valid) {
+        throw new Error(verifyRes.error);
+      }
+
+      appendJobLog('mapper', `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsSize} bytes points3D)`);
+
+      // Attempt model conversion to PLY for 3D Viewport
+      let plyPath = null;
+      try {
+        appendJobLog('export', 'Converting sparse model to PLY for 3D viewport preview...');
+        const convArgs = buildColmapStageArgs('model_converter', {
+          databasePath: dbPath,
+          imagePath: dirCheck.imageDir,
+          sparseOutputPath: sparseDir,
+        });
+
+        await new Promise((resolve) => {
+          const convProc = spawn(colmapExe, convArgs, {
+            cwd: dirCheck.outputDir,
+            shell: false,
+            windowsHide: true,
+          });
+          convProc.on('close', (c) => resolve(c === 0));
+          convProc.on('error', () => resolve(false));
+        });
+
+        const expectedPly = path.join(dirCheck.outputDir, 'sparse.ply');
+        if (fs.existsSync(expectedPly) && fs.statSync(expectedPly).size > 0) {
+          plyPath = expectedPly;
+          authorizedPlyPaths.add(toCanonicalPath(expectedPly));
+          appendJobLog('export', `Exported sparse point cloud to PLY: ${expectedPly}`);
+        }
+      } catch (convErr) {
+        appendJobLog('export', `Note: PLY conversion skipped: ${convErr.message}`);
+      }
+
+      activeReconstructionJob.status = 'completed';
+      activeReconstructionJob.endTime = Date.now();
+      activeReconstructionJob.plyPath = plyPath;
+      activeReconstructionJob.modelStats = {
+        modelDir: verifyRes.modelDir,
+        pointsSize: verifyRes.pointsSize,
+        plyPath,
+      };
+
+      appendJobLog('system', '✓ Sparse Reconstruction Pipeline completed successfully!');
+
+      emitReconstructionProgress({
+        jobId,
+        status: 'completed',
+        stage: 'mapper',
+        stageLabel: 'Completed',
+        stageIndex: 3,
+        totalStages: 3,
+        elapsedMs: activeReconstructionJob.endTime - activeReconstructionJob.startTime,
+        modelStats: activeReconstructionJob.modelStats,
+        plyPath,
+      });
+    } catch (err) {
+      if (activeReconstructionJob.status !== 'cancelled') {
+        activeReconstructionJob.status = 'failed';
+        activeReconstructionJob.endTime = Date.now();
+        activeReconstructionJob.error = err.message;
+        appendJobLog('error', `Pipeline Failure: ${err.message}`);
+
+        emitReconstructionProgress({
+          jobId,
+          status: 'failed',
+          stage: activeReconstructionJob.stage,
+          stageLabel: activeReconstructionJob.stageLabel,
+          stageIndex: activeReconstructionJob.stageIndex,
+          totalStages: 3,
+          elapsedMs: activeReconstructionJob.endTime - activeReconstructionJob.startTime,
+          error: err.message,
+        });
+      }
+    }
+  })();
+
+  return {
+    success: true,
+    jobId,
+    imageDir: dirCheck.imageDir,
+    outputDir: dirCheck.outputDir,
   };
 }
 
@@ -838,6 +1423,9 @@ ipcMain.handle('dialog:selectOpenMvsExecutable', async () => {
     }
 
     const queryResult = await queryOpenMvsVersion(valid);
+    if (queryResult.detected) {
+      queryResult.pipelineModules = inspectOpenMvsModules(valid);
+    }
     return {
       canceled: false,
       ...queryResult,
@@ -846,6 +1434,100 @@ ipcMain.handle('dialog:selectOpenMvsExecutable', async () => {
     console.error('Aeromorph Desktop: Error selecting OpenMVS executable:', err);
     return { canceled: true, error: err.message };
   }
+});
+
+/**
+ * 9. Sprint 6B: Select Workspace Output Directory
+ */
+ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
+  if (!mainWindow) return { canceled: true };
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select Project Output Workspace Directory',
+      properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'],
+    });
+
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const selected = path.normalize(path.resolve(result.filePaths[0]));
+    return {
+      canceled: false,
+      path: selected,
+      name: path.basename(selected),
+    };
+  } catch (err) {
+    console.error('Aeromorph Desktop: Error selecting workspace directory:', err);
+    return { canceled: true, error: err.message };
+  }
+});
+
+/**
+ * 10. Sprint 6B: Start Sparse Reconstruction Pipeline
+ */
+ipcMain.handle('reconstruction:start', async (event, config = {}) => {
+  if (activeReconstructionJob && activeReconstructionJob.status === 'running') {
+    return {
+      success: false,
+      error: 'A reconstruction job is already in progress. Wait for it to finish or cancel it first.',
+    };
+  }
+
+  const sanitized = {
+    imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
+    outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
+    customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
+    numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= 8 ? config.numThreads : 4,
+  };
+
+  return await startSparseReconstructionJob(sanitized);
+});
+
+/**
+ * 11. Sprint 6B: Cancel Active Reconstruction Pipeline
+ */
+ipcMain.handle('reconstruction:cancel', async () => {
+  if (!activeReconstructionJob || activeReconstructionJob.status !== 'running') {
+    return { canceled: false, message: 'No active reconstruction job to cancel.' };
+  }
+
+  activeReconstructionJob.status = 'cancelled';
+  activeReconstructionJob.endTime = Date.now();
+  if (activeReconstructionJob.currentProcess) {
+    terminateProcessTree(activeReconstructionJob.currentProcess);
+  }
+
+  return { canceled: true };
+});
+
+/**
+ * 12. Sprint 6B: Get Reconstruction Job Status
+ */
+ipcMain.handle('reconstruction:getStatus', async () => {
+  if (!activeReconstructionJob) {
+    return { status: 'idle', stage: null, logs: [] };
+  }
+
+  return {
+    id: activeReconstructionJob.id,
+    status: activeReconstructionJob.status,
+    stage: activeReconstructionJob.stage,
+    stageLabel: activeReconstructionJob.stageLabel,
+    stageIndex: activeReconstructionJob.stageIndex,
+    totalStages: activeReconstructionJob.totalStages,
+    startTime: activeReconstructionJob.startTime,
+    endTime: activeReconstructionJob.endTime,
+    elapsedMs: activeReconstructionJob.endTime
+      ? activeReconstructionJob.endTime - activeReconstructionJob.startTime
+      : Date.now() - activeReconstructionJob.startTime,
+    imageDir: activeReconstructionJob.imageDir,
+    outputDir: activeReconstructionJob.outputDir,
+    error: activeReconstructionJob.error,
+    modelStats: activeReconstructionJob.modelStats,
+    plyPath: activeReconstructionJob.plyPath,
+    logs: activeReconstructionJob.logs.slice(-150),
+  };
 });
 
 // ------------------------------------------------------------------------------
@@ -874,3 +1556,16 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
+
+module.exports = {
+  validateBinaryExecutable,
+  validateAndCountImageDirectory,
+  validateReconstructionDirectories,
+  buildColmapStageArgs,
+  verifySparseReconstructionOutput,
+  startSparseReconstructionJob,
+  terminateProcessTree,
+  detectColmapTool,
+  detectOpenMvsTool,
+  inspectOpenMvsModules,
+};

@@ -27,6 +27,7 @@ import {
   selectColmapExecutable,
   selectOpenMvsExecutable,
   validateImageDirectory,
+  selectWorkspaceDirectory,
 } from '../services/desktopBridge';
 import { getCustomToolPaths, saveCustomToolPaths } from '../services/projectService';
 
@@ -37,6 +38,7 @@ export default function ImportPhotographs({
   projects = [],
   onUpdateProjectImages,
   onUpdateProjectNativeDirectory,
+  onUpdateProjectOutputDirectory,
   onProceedToStudio,
   onNavigateHome,
   onSelectProject,
@@ -505,6 +507,12 @@ export default function ImportPhotographs({
               )}
             </div>
 
+            {envState.colmap.warning && (
+              <div style={{ fontSize: '10.5px', color: 'var(--color-warning)', marginBottom: '8px', background: 'rgba(234, 179, 8, 0.1)', padding: '4px 8px', borderRadius: '4px' }}>
+                ⚠ {envState.colmap.warning}
+              </div>
+            )}
+
             {isElectron && (
               <button
                 type="button"
@@ -532,13 +540,41 @@ export default function ImportPhotographs({
               </span>
             </div>
 
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={envState.openmvs.path || envState.openmvs.error}>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={envState.openmvs.path || envState.openmvs.error}>
               {envState.openmvs.path ? (
                 <code style={{ fontFamily: 'var(--font-mono)', fontSize: '10.5px' }}>{envState.openmvs.path}</code>
               ) : (
                 <span style={{ color: 'var(--color-warning)' }}>{envState.openmvs.error || 'InterfaceCOLMAP.exe not found'}</span>
               )}
             </div>
+
+            {envState.openmvs.warning && (
+              <div style={{ fontSize: '10.5px', color: 'var(--color-warning)', marginBottom: '8px', background: 'rgba(234, 179, 8, 0.1)', padding: '4px 8px', borderRadius: '4px' }}>
+                ⚠ {envState.openmvs.warning}
+              </div>
+            )}
+
+            {envState.openmvs.pipelineModules && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                {Object.entries(envState.openmvs.pipelineModules).map(([key, mod]) => (
+                  <span
+                    key={key}
+                    style={{
+                      fontSize: '10px',
+                      fontFamily: 'var(--font-mono)',
+                      padding: '2px 5px',
+                      borderRadius: '3px',
+                      background: mod.available ? 'rgba(213, 255, 101, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                      color: mod.available ? 'var(--accent)' : 'var(--text-muted)',
+                      border: `1px solid ${mod.available ? 'rgba(213, 255, 101, 0.25)' : 'var(--border-subtle)'}`,
+                    }}
+                    title={`${mod.name}: ${mod.available ? (mod.path || 'Found') : 'Not found in OpenMVS folder'}`}
+                  >
+                    {mod.available ? '✓ ' : '✗ '}{mod.name.replace('.exe', '')}
+                  </span>
+                ))}
+              </div>
+            )}
 
             {isElectron && (
               <button
@@ -652,6 +688,7 @@ export default function ImportPhotographs({
                 <CheckCircle2 size={12} />
                 <span>
                   Attached: {currentProject.sourceDirectoryReference.fileCount} Photographs ({formatFileSize(totalBytes)})
+                  {folderValidation?.capped ? ' [Scan capped — count may be incomplete]' : ''}
                 </span>
               </div>
               <div className="val-tag">
@@ -714,8 +751,9 @@ export default function ImportPhotographs({
                 Native Folder: {currentProject.sourceDirectoryReference.name}
               </span>
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+            <span style={{ fontSize: '11px', color: folderValidation?.capped ? 'var(--color-warning)' : 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
               {currentProject.sourceDirectoryReference.fileCount} image files • {formatFileSize(totalBytes)}
+              {folderValidation?.capped ? ' (scan capped at 5,000 entries — may be incomplete)' : ''}
             </span>
           </div>
           <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: 'var(--radius-xs)' }}>
@@ -727,10 +765,16 @@ export default function ImportPhotographs({
               <span>Folder Validation Notice: {folderValidation.error}</span>
             </div>
           )}
+          {folderValidation?.warning && (
+            <div style={{ background: 'rgba(234, 179, 8, 0.12)', border: '1px solid var(--color-warning)', padding: '8px 12px', borderRadius: '4px', fontSize: '11.5px', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertTriangle size={14} />
+              <span>{folderValidation.warning}</span>
+            </div>
+          )}
           {folderValidation && folderValidation.valid && (
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle2 size={12} color="var(--accent)" />
-              <span>Directory validated non-recursively: {folderValidation.fileCount} supported photographs found. {folderValidation.capped ? '(Scan limit of 5,000 entries reached)' : ''}</span>
+            <div style={{ fontSize: '11px', color: folderValidation.capped ? 'var(--color-warning)' : 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {folderValidation.capped ? <AlertTriangle size={12} color="var(--color-warning)" /> : <CheckCircle2 size={12} color="var(--accent)" />}
+              <span>Directory validated non-recursively: {folderValidation.fileCount} supported photographs found. {folderValidation.capped ? '(Scan cap of 5,000 entries reached — count may be incomplete)' : ''}</span>
             </div>
           )}
           {nativeDirectory?.imageFiles && nativeDirectory.imageFiles.length > 0 && (
@@ -749,6 +793,32 @@ export default function ImportPhotographs({
               )}
             </div>
           )}
+
+          {/* Dedicated Output Workspace Section (Sprint 6B) */}
+          <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <FolderOpen size={13} color="var(--accent)" />
+              <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>Separate Project Workspace (COLMAP Output):</span>
+              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: currentProject.outputDirectoryReference?.path ? 'var(--accent)' : 'var(--color-warning)' }}>
+                {currentProject.outputDirectoryReference?.path || 'Not Configured (Separate from photos)'}
+              </span>
+            </div>
+            {isElectron && (
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ fontSize: '11px', padding: '3px 8px' }}
+                onClick={async () => {
+                  const res = await selectWorkspaceDirectory();
+                  if (!res.canceled && res.path && onUpdateProjectOutputDirectory) {
+                    onUpdateProjectOutputDirectory(currentProject.id, res);
+                  }
+                }}
+              >
+                {currentProject.outputDirectoryReference?.path ? 'Change Output Workspace...' : 'Set Output Workspace...'}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
