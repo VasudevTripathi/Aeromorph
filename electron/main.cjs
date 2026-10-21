@@ -681,11 +681,27 @@ async function validateReconstructionDirectories(rawImageDir, rawOutputDir) {
   };
 }
 
+function cleanupTemporaryJobArtifacts(outputDir) {
+  if (!outputDir || typeof outputDir !== 'string') return;
+  const tempFiles = [
+    path.join(outputDir, 'database.db-journal'),
+    path.join(outputDir, 'database.db-wal'),
+    path.join(outputDir, 'database.db-shm'),
+  ];
+  for (const f of tempFiles) {
+    try {
+      if (fs.existsSync(f)) {
+        fs.unlinkSync(f);
+      }
+    } catch {}
+  }
+}
+
 /**
  * Build fixed argument arrays for COLMAP sparse stages (shell: false)
  * Targets Intel i3-1220P CPU-only execution without CUDA.
  */
-function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath, numThreads = 4 }) {
+function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath, inputModelPath, numThreads = 4 }) {
   const threadsStr = String(numThreads);
   switch (stage) {
     case 'feature_extractor':
@@ -715,7 +731,7 @@ function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath
     case 'model_converter':
       return [
         'model_converter',
-        '--input_path', path.join(sparseOutputPath, '0'),
+        '--input_path', inputModelPath || path.join(sparseOutputPath, '0'),
         '--output_path', path.join(path.dirname(sparseOutputPath), 'sparse.ply'),
         '--output_type', 'PLY',
       ];
@@ -726,50 +742,87 @@ function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath
 
 /**
  * Verify whether a valid sparse reconstruction model was produced
+ * Inspects all numbered directories (0, 1, 2...) created by COLMAP mapper.
  */
 function verifySparseReconstructionOutput(sparseDir) {
   if (!fs.existsSync(sparseDir)) {
     return { valid: false, error: 'Sparse output directory was not created by mapper.' };
   }
 
-  const modelZero = path.join(sparseDir, '0');
-  if (!fs.existsSync(modelZero)) {
+  let entries;
+  try {
+    entries = fs.readdirSync(sparseDir, { withFileTypes: true });
+  } catch (err) {
+    return { valid: false, error: `Failed to read sparse output directory: ${err.message}` };
+  }
+
+  const modelDirs = entries
+    .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
+    .map((e) => ({
+      index: parseInt(e.name, 10),
+      dirName: e.name,
+      fullPath: path.join(sparseDir, e.name),
+    }))
+    .sort((a, b) => a.index - b.index);
+
+  if (modelDirs.length === 0) {
     return {
       valid: false,
       error: 'COLMAP finished, but no sparse model (0/) was reconstructed. Check visual overlap across images.',
     };
   }
 
-  const pointsBin = path.join(modelZero, 'points3D.bin');
-  const pointsTxt = path.join(modelZero, 'points3D.txt');
-  const camerasBin = path.join(modelZero, 'cameras.bin');
-  const camerasTxt = path.join(modelZero, 'cameras.txt');
-  const imagesBin = path.join(modelZero, 'images.bin');
-  const imagesTxt = path.join(modelZero, 'images.txt');
+  const candidateModels = [];
+  for (const m of modelDirs) {
+    const pointsBin = path.join(m.fullPath, 'points3D.bin');
+    const pointsTxt = path.join(m.fullPath, 'points3D.txt');
+    const camerasBin = path.join(m.fullPath, 'cameras.bin');
+    const camerasTxt = path.join(m.fullPath, 'cameras.txt');
+    const imagesBin = path.join(m.fullPath, 'images.bin');
+    const imagesTxt = path.join(m.fullPath, 'images.txt');
 
-  const hasPoints = fs.existsSync(pointsBin) || fs.existsSync(pointsTxt);
-  const hasCameras = fs.existsSync(camerasBin) || fs.existsSync(camerasTxt);
-  const hasImages = fs.existsSync(imagesBin) || fs.existsSync(imagesTxt);
+    const hasPoints = fs.existsSync(pointsBin) || fs.existsSync(pointsTxt);
+    const hasCameras = fs.existsSync(camerasBin) || fs.existsSync(camerasTxt);
+    const hasImages = fs.existsSync(imagesBin) || fs.existsSync(imagesTxt);
 
-  if (!hasPoints || !hasCameras || !hasImages) {
-    return { valid: false, error: 'Model directory is missing standard COLMAP reconstruction files.' };
+    if (hasPoints && hasCameras && hasImages) {
+      let pointsSize = 0;
+      try {
+        const stat = fs.statSync(fs.existsSync(pointsBin) ? pointsBin : pointsTxt);
+        pointsSize = stat.size;
+      } catch {}
+
+      if (pointsSize > 0) {
+        candidateModels.push({
+          modelDir: m.fullPath,
+          modelName: m.dirName,
+          modelIndex: m.index,
+          pointsSize,
+          isBinary: fs.existsSync(pointsBin),
+        });
+      }
+    }
   }
 
-  let pointsSize = 0;
-  try {
-    const stat = fs.statSync(fs.existsSync(pointsBin) ? pointsBin : pointsTxt);
-    pointsSize = stat.size;
-  } catch {}
-
-  if (pointsSize <= 0) {
+  if (candidateModels.length === 0) {
     return { valid: false, error: 'Reconstructed sparse model contains 0 3D points.' };
   }
 
+  // Model 0 is preferred if present and valid; otherwise pick model with largest point file
+  candidateModels.sort((a, b) => {
+    if (a.modelIndex === 0) return -1;
+    if (b.modelIndex === 0) return 1;
+    return b.pointsSize - a.pointsSize;
+  });
+
+  const bestModel = candidateModels[0];
   return {
     valid: true,
-    modelDir: modelZero,
-    pointsSize,
-    isBinary: fs.existsSync(pointsBin),
+    modelDir: bestModel.modelDir,
+    modelIndex: bestModel.modelIndex,
+    pointsSize: bestModel.pointsSize,
+    isBinary: bestModel.isBinary,
+    totalModelsFound: candidateModels.length,
   };
 }
 
@@ -940,6 +993,7 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
       }
 
       if (activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(dirCheck.outputDir);
         appendJobLog('system', 'Sparse reconstruction was cancelled by user.');
         emitReconstructionProgress({
           jobId,
@@ -948,7 +1002,7 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
           stageLabel: activeReconstructionJob.stageLabel,
           stageIndex: activeReconstructionJob.stageIndex,
           totalStages: 3,
-          elapsedMs: Date.now() - activeReconstructionJob.startTime,
+          elapsedMs: (activeReconstructionJob.endTime || Date.now()) - activeReconstructionJob.startTime,
           error: 'Pipeline cancelled by user.',
         });
         return;
@@ -961,7 +1015,13 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         throw new Error(verifyRes.error);
       }
 
-      appendJobLog('mapper', `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsSize} bytes points3D)`);
+      appendJobLog('mapper', `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsSize} bytes points3D, total models: ${verifyRes.totalModelsFound || 1})`);
+
+      // Cancellation check before model converter
+      if (activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+        return;
+      }
 
       // Attempt model conversion to PLY for 3D Viewport
       let plyPath = null;
@@ -971,17 +1031,38 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
           databasePath: dbPath,
           imagePath: dirCheck.imageDir,
           sparseOutputPath: sparseDir,
+          inputModelPath: verifyRes.modelDir,
         });
 
         await new Promise((resolve) => {
-          const convProc = spawn(colmapExe, convArgs, {
-            cwd: dirCheck.outputDir,
-            shell: false,
-            windowsHide: true,
+          if (activeReconstructionJob.status === 'cancelled') {
+            return resolve(false);
+          }
+          let convProc;
+          try {
+            convProc = spawn(colmapExe, convArgs, {
+              cwd: dirCheck.outputDir,
+              shell: false,
+              windowsHide: true,
+            });
+            activeReconstructionJob.currentProcess = convProc;
+          } catch {
+            return resolve(false);
+          }
+          convProc.on('close', (c) => {
+            activeReconstructionJob.currentProcess = null;
+            resolve(c === 0 && activeReconstructionJob.status !== 'cancelled');
           });
-          convProc.on('close', (c) => resolve(c === 0));
-          convProc.on('error', () => resolve(false));
+          convProc.on('error', () => {
+            activeReconstructionJob.currentProcess = null;
+            resolve(false);
+          });
         });
+
+        if (activeReconstructionJob.status === 'cancelled') {
+          cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+          return;
+        }
 
         const expectedPly = path.join(dirCheck.outputDir, 'sparse.ply');
         if (fs.existsSync(expectedPly) && fs.statSync(expectedPly).size > 0) {
@@ -991,6 +1072,11 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         }
       } catch (convErr) {
         appendJobLog('export', `Note: PLY conversion skipped: ${convErr.message}`);
+      }
+
+      if (activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+        return;
       }
 
       activeReconstructionJob.status = 'completed';
@@ -1016,9 +1102,11 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         plyPath,
       });
     } catch (err) {
+      cleanupTemporaryJobArtifacts(dirCheck.outputDir);
       if (activeReconstructionJob.status !== 'cancelled') {
         activeReconstructionJob.status = 'failed';
         activeReconstructionJob.endTime = Date.now();
+        activeReconstructionJob.currentProcess = null;
         activeReconstructionJob.error = err.message;
         appendJobLog('error', `Pipeline Failure: ${err.message}`);
 
@@ -1565,6 +1653,7 @@ module.exports = {
   verifySparseReconstructionOutput,
   startSparseReconstructionJob,
   terminateProcessTree,
+  cleanupTemporaryJobArtifacts,
   detectColmapTool,
   detectOpenMvsTool,
   inspectOpenMvsModules,
