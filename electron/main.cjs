@@ -1152,6 +1152,198 @@ function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath
 }
 
 /**
+ * Detect available free disk space on target filesystem volume
+ */
+function checkFreeDiskSpace(targetDir, minFreeMb = 500) {
+  try {
+    if (typeof fs.statfsSync === 'function') {
+      const stats = fs.statfsSync(targetDir);
+      const freeMb = Math.round((Number(stats.bfree) * Number(stats.bsize)) / (1024 * 1024));
+      if (freeMb < minFreeMb) {
+        return {
+          ok: false,
+          freeMb,
+          error: `Insufficient disk space: only ${freeMb} MB free on output volume (minimum ${minFreeMb} MB required).`,
+        };
+      }
+      return { ok: true, freeMb, error: null };
+    }
+  } catch {}
+  return { ok: true, freeMb: null, error: null };
+}
+
+/**
+ * Build fixed argument arrays for OpenMVS stages (shell: false)
+ * Targets Intel i3-1220P CPU-only execution with 8 GB RAM constraints.
+ * Note: TextureMesh is explicitly excluded and unsupported.
+ */
+function buildOpenMvsStageArgs(stage, options = {}) {
+  const {
+    colmapModelDir,
+    scenePath,
+    imageDir,
+    denseScenePath,
+    meshPlyPath,
+    numThreads = 4,
+    resolutionLevel = 1,
+    maxResolution = 1920,
+  } = options;
+
+  const threads = Number.isInteger(numThreads) && numThreads >= 1 && numThreads <= 4 ? numThreads : 4;
+  const threadsStr = String(threads);
+
+  switch (stage) {
+    case 'interface_colmap': {
+      if (!colmapModelDir || typeof colmapModelDir !== 'string' || colmapModelDir.includes('\0')) {
+        throw new Error('colmapModelDir must be a valid directory path.');
+      }
+      if (!scenePath || typeof scenePath !== 'string' || scenePath.includes('\0')) {
+        throw new Error('scenePath must be a valid output path.');
+      }
+      if (!imageDir || typeof imageDir !== 'string' || imageDir.includes('\0')) {
+        throw new Error('imageDir must be a valid directory path.');
+      }
+      return [
+        '-i', path.normalize(path.resolve(colmapModelDir)),
+        '-o', path.normalize(path.resolve(scenePath)),
+        '--image-folder', path.normalize(path.resolve(imageDir)),
+        '--max-threads', threadsStr,
+        '-v', '2',
+      ];
+    }
+    case 'densify_point_cloud': {
+      if (!scenePath || typeof scenePath !== 'string' || scenePath.includes('\0')) {
+        throw new Error('scenePath must be a valid input scene path.');
+      }
+      if (!denseScenePath || typeof denseScenePath !== 'string' || denseScenePath.includes('\0')) {
+        throw new Error('denseScenePath must be a valid output dense scene path.');
+      }
+      const resLevel = Number.isInteger(resolutionLevel) && resolutionLevel >= 1 && resolutionLevel <= 4 ? resolutionLevel : 1;
+      const maxRes = Number.isInteger(maxResolution) && maxResolution >= 640 && maxResolution <= 2560 ? maxResolution : 1920;
+      return [
+        '-i', path.normalize(path.resolve(scenePath)),
+        '-o', path.normalize(path.resolve(denseScenePath)),
+        '--resolution-level', String(resLevel),
+        '--max-resolution', String(maxRes),
+        '--max-threads', threadsStr,
+        '-v', '2',
+      ];
+    }
+    case 'reconstruct_mesh': {
+      if (!denseScenePath || typeof denseScenePath !== 'string' || denseScenePath.includes('\0')) {
+        throw new Error('denseScenePath must be a valid input dense scene path.');
+      }
+      if (!meshPlyPath || typeof meshPlyPath !== 'string' || meshPlyPath.includes('\0')) {
+        throw new Error('meshPlyPath must be a valid output mesh PLY path.');
+      }
+      return [
+        '-i', path.normalize(path.resolve(denseScenePath)),
+        '-o', path.normalize(path.resolve(meshPlyPath)),
+        '--export-type', 'ply',
+        '--max-threads', threadsStr,
+        '-v', '2',
+      ];
+    }
+    default:
+      throw new Error(`Unknown OpenMVS pipeline stage: ${stage}`);
+  }
+}
+
+/**
+ * Verify whether an OpenMVS scene file (.mvs) is valid and non-empty.
+ */
+function verifyOpenMvsScene(scenePath) {
+  if (!scenePath || typeof scenePath !== 'string' || scenePath.includes('\0')) {
+    return { valid: false, error: 'OpenMVS scene path must be a non-empty string.' };
+  }
+  const resolved = path.normalize(path.resolve(scenePath));
+  if (!fs.existsSync(resolved)) {
+    return { valid: false, error: `OpenMVS scene file was not created: ${path.basename(resolved)}` };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) {
+      return { valid: false, error: 'OpenMVS scene path is not a regular file.' };
+    }
+    if (stat.size < 64) {
+      return { valid: false, error: `OpenMVS scene file is empty or corrupted (${stat.size} bytes).` };
+    }
+    return { valid: true, sizeBytes: stat.size, error: null };
+  } catch (err) {
+    return { valid: false, error: `Failed to inspect OpenMVS scene: ${err.message}` };
+  }
+}
+
+/**
+ * Verify OpenMVS dense point cloud output.
+ * Ensures scene_dense.mvs and scene_dense.ply exist,
+ * and validates scene_dense.ply has vertices and is classified as a point cloud (not a mesh).
+ */
+function verifyOpenMvsDenseOutput(denseScenePath, densePlyPath) {
+  const sceneCheck = verifyOpenMvsScene(denseScenePath);
+  if (!sceneCheck.valid) {
+    return { valid: false, error: `Dense scene verification failed: ${sceneCheck.error}` };
+  }
+
+  if (!densePlyPath || !fs.existsSync(densePlyPath)) {
+    return { valid: false, error: `Dense point cloud PLY was not created: ${densePlyPath ? path.basename(densePlyPath) : 'scene_dense.ply'}` };
+  }
+
+  const plyValidation = validateExportedPly(densePlyPath);
+  if (!plyValidation.valid) {
+    return { valid: false, error: `Dense PLY validation failed: ${plyValidation.error}` };
+  }
+
+  if (!plyValidation.isPointCloud || plyValidation.faceCount > 0) {
+    return {
+      valid: false,
+      error: `Dense point cloud PLY contains ${plyValidation.faceCount} face elements; expected point cloud without polygon faces.`,
+    };
+  }
+
+  return {
+    valid: true,
+    vertexCount: plyValidation.vertexCount,
+    fileSizeBytes: plyValidation.fileSizeBytes,
+    isPointCloud: true,
+    isMesh: false,
+    error: null,
+  };
+}
+
+/**
+ * Verify OpenMVS polygonal mesh output.
+ * Ensures scene_mesh.ply exists and validates it has >0 faces and >0 vertices.
+ */
+function verifyOpenMvsMeshOutput(meshPlyPath) {
+  if (!meshPlyPath || !fs.existsSync(meshPlyPath)) {
+    return { valid: false, error: `Reconstructed mesh PLY was not created: ${meshPlyPath ? path.basename(meshPlyPath) : 'scene_mesh.ply'}` };
+  }
+
+  const plyValidation = validateExportedPly(meshPlyPath);
+  if (!plyValidation.valid) {
+    return { valid: false, error: `Mesh PLY validation failed: ${plyValidation.error}` };
+  }
+
+  if (!plyValidation.isMesh || plyValidation.faceCount <= 0) {
+    return {
+      valid: false,
+      error: `Mesh PLY validation failed: model has 0 face elements (contains ${plyValidation.vertexCount} vertices). A polygonal mesh must contain face elements.`,
+    };
+  }
+
+  return {
+    valid: true,
+    vertexCount: plyValidation.vertexCount,
+    faceCount: plyValidation.faceCount,
+    fileSizeBytes: plyValidation.fileSizeBytes,
+    isPointCloud: false,
+    isMesh: true,
+    error: null,
+  };
+}
+
+/**
  * Parse COLMAP points3D binary file.
  * Format:
  * uint64 num_points
@@ -1572,10 +1764,22 @@ async function startSparseReconstructionJob(config = {}) {
     outputDir,
     runDir: explicitRunDir,
     customColmapPath,
-    numThreads = 4,
+    customOpenmvsPath,
+    targetStage: rawTargetStage = 'sparse',
+    resolutionLevel: rawResLevel = 1,
+    maxResolution: rawMaxRes = 1920,
+    numThreads: rawNumThreads = 4,
     spawnProcess: customSpawn,
     colmapExe: customColmapExe,
+    customInterfaceColmapExe,
+    customDensifyExe,
+    customMeshExe,
   } = config;
+
+  const targetStage = ['sparse', 'dense', 'mesh'].includes(rawTargetStage) ? rawTargetStage : 'sparse';
+  const resolutionLevel = Number.isInteger(rawResLevel) && rawResLevel >= 1 && rawResLevel <= 4 ? rawResLevel : 1;
+  const maxResolution = Number.isInteger(rawMaxRes) && rawMaxRes >= 640 && rawMaxRes <= 2560 ? rawMaxRes : 1920;
+  const numThreads = Number.isInteger(rawNumThreads) && rawNumThreads >= 1 && rawNumThreads <= 4 ? rawNumThreads : 4;
 
   const jobId = typeof config.jobId === 'string' && config.jobId.trim()
     ? config.jobId.trim()
@@ -1590,7 +1794,15 @@ async function startSparseReconstructionJob(config = {}) {
     return { success: false, error: dirCheck.error };
   }
 
-  // 2. Validate COLMAP executable
+  const runDir = dirCheck.runDir;
+
+  // 2. Validate disk space on output volume
+  const diskCheck = checkFreeDiskSpace(runDir, 500);
+  if (!diskCheck.ok) {
+    return { success: false, error: diskCheck.error };
+  }
+
+  // 3. Validate COLMAP executable
   let colmapExe = customColmapExe || null;
   let colmapVersion = null;
 
@@ -1610,21 +1822,65 @@ async function startSparseReconstructionJob(config = {}) {
     colmapVersion = colmapDetection.version;
   }
 
-  const runDir = dirCheck.runDir;
+  // 4. Validate OpenMVS executables if dense or mesh generation is targeted
+  let interfaceColmapExe = customInterfaceColmapExe || config.interfaceColmapExe || null;
+  let densifyExe = customDensifyExe || config.densifyExe || null;
+  let reconstructMeshExe = customMeshExe || config.reconstructMeshExe || null;
+
+  if (targetStage === 'dense' || targetStage === 'mesh') {
+    if (!interfaceColmapExe || !densifyExe || (targetStage === 'mesh' && !reconstructMeshExe)) {
+      if (customOpenmvsPath && typeof customOpenmvsPath === 'string' && customOpenmvsPath.trim()) {
+        const validCustom = validateBinaryExecutable(customOpenmvsPath, ALLOWED_OPENMVS_NAMES);
+        if (!validCustom) {
+          return { success: false, error: `Configured OpenMVS executable "${customOpenmvsPath}" was not found or is invalid.` };
+        }
+      }
+
+      const openmvsDetection = await detectOpenMvsTool(customOpenmvsPath);
+      if (!openmvsDetection.detected || !openmvsDetection.path) {
+        return { success: false, error: openmvsDetection.error || 'OpenMVS executable was not detected.' };
+      }
+
+      const modules = openmvsDetection.pipelineModules || inspectOpenMvsModules(openmvsDetection.path);
+      if (!interfaceColmapExe) {
+        if (!modules?.interfaceColmap?.available || !modules.interfaceColmap.path) {
+          return { success: false, error: 'OpenMVS companion tool InterfaceCOLMAP.exe was not found in OpenMVS directory.' };
+        }
+        interfaceColmapExe = modules.interfaceColmap.path;
+      }
+
+      if (!densifyExe) {
+        if (!modules?.densifyPointCloud?.available || !modules.densifyPointCloud.path) {
+          return { success: false, error: 'OpenMVS companion tool DensifyPointCloud.exe was not found in OpenMVS directory.' };
+        }
+        densifyExe = modules.densifyPointCloud.path;
+      }
+
+      if (targetStage === 'mesh' && !reconstructMeshExe) {
+        if (!modules?.reconstructMesh?.available || !modules.reconstructMesh.path) {
+          return { success: false, error: 'OpenMVS companion tool ReconstructMesh.exe was not found in OpenMVS directory.' };
+        }
+        reconstructMeshExe = modules.reconstructMesh.path;
+      }
+    }
+  }
+
   const dbPath = path.join(runDir, 'database.db');
   const sparseDir = path.join(runDir, 'sparse');
   fs.mkdirSync(sparseDir, { recursive: true });
 
   const logFilePath = path.join(runDir, 'aeromorph_colmap.log');
   const spawnFn = typeof customSpawn === 'function' ? customSpawn : spawn;
+  const totalStages = targetStage === 'mesh' ? 6 : (targetStage === 'dense' ? 5 : 3);
 
   activeReconstructionJob = {
     id: jobId,
     status: 'running',
+    targetStage,
     stage: 'feature_extractor',
     stageLabel: 'Feature Extraction (SIFT)',
     stageIndex: 1,
-    totalStages: 3,
+    totalStages,
     startTime: Date.now(),
     endTime: null,
     imageDir: dirCheck.imageDir,
@@ -1633,6 +1889,9 @@ async function startSparseReconstructionJob(config = {}) {
     databasePath: dbPath,
     sparseDir: sparseDir,
     colmapPath: colmapExe,
+    interfaceColmapPath: interfaceColmapExe,
+    densifyPath: densifyExe,
+    reconstructMeshPath: reconstructMeshExe,
     currentProcess: null,
     logs: [],
     error: null,
@@ -1654,8 +1913,16 @@ async function startSparseReconstructionJob(config = {}) {
     } catch {}
   };
 
-  appendJobLog('setup', `Starting Sparse Reconstruction: ${dirCheck.imageCount} photographs`);
+  appendJobLog('setup', `Starting Reconstruction Pipeline: ${dirCheck.imageCount} photographs, target: ${targetStage.toUpperCase()}`);
   appendJobLog('setup', `COLMAP: ${colmapExe} (version: ${colmapVersion || 'detected'})`);
+  if (targetStage === 'dense' || targetStage === 'mesh') {
+    appendJobLog('setup', `OpenMVS InterfaceCOLMAP: ${interfaceColmapExe}`);
+    appendJobLog('setup', `OpenMVS DensifyPointCloud: ${densifyExe} (resLevel: ${resolutionLevel}, maxRes: ${maxResolution})`);
+    if (targetStage === 'mesh') {
+      appendJobLog('setup', `OpenMVS ReconstructMesh: ${reconstructMeshExe}`);
+    }
+  }
+  appendJobLog('setup', `Concurrency: ${numThreads} CPU threads, Profile: Conservative 8 GB RAM`);
   appendJobLog('setup', `Workspace: ${dirCheck.workspaceDir}`);
   appendJobLog('setup', `Isolated Run Directory: ${runDir}`);
 
@@ -1665,27 +1932,84 @@ async function startSparseReconstructionJob(config = {}) {
     stage: 'feature_extractor',
     stageLabel: 'Feature Extraction (SIFT)',
     stageIndex: 1,
-    totalStages: 3,
+    totalStages,
     elapsedMs: 0,
     runDir,
   });
 
+  // Reusable process runner with log capture & cancellation binding
+  const runSubprocess = (exe, args, stageKey) => {
+    return new Promise((resolve, reject) => {
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        return resolve({ cancelled: true });
+      }
+      let proc;
+      try {
+        proc = spawnFn(exe, args, {
+          cwd: runDir,
+          shell: false,
+          windowsHide: true,
+        });
+      } catch (spawnErr) {
+        return reject(new Error(`Failed to start ${stageKey}: ${spawnErr.message}`));
+      }
+
+      if (activeReconstructionJob) {
+        activeReconstructionJob.currentProcess = proc;
+      }
+
+      proc.stdout?.on('data', (chunk) => {
+        const lines = chunk.toString().split(/\r?\n/);
+        for (const l of lines) {
+          if (l.trim()) appendJobLog(stageKey, l);
+        }
+      });
+
+      proc.stderr?.on('data', (chunk) => {
+        const lines = chunk.toString().split(/\r?\n/);
+        for (const l of lines) {
+          if (l.trim()) appendJobLog(stageKey, l);
+        }
+      });
+
+      proc.on('error', (err) => {
+        if (activeReconstructionJob) {
+          activeReconstructionJob.currentProcess = null;
+        }
+        reject(err);
+      });
+
+      proc.on('close', (code, signal) => {
+        if (activeReconstructionJob) {
+          activeReconstructionJob.currentProcess = null;
+        }
+        if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+          return resolve({ cancelled: true });
+        }
+        if (code === 0) {
+          return resolve({ code });
+        }
+        reject(new Error(`Stage ${stageKey} failed with exit code ${code}${signal ? ` (${signal})` : ''}`));
+      });
+    });
+  };
+
   // Run stages asynchronously in background
   (async () => {
-    const stages = [
+    const colmapStages = [
       { key: 'feature_extractor', label: 'Feature Extraction (SIFT)', num: '01' },
       { key: 'exhaustive_matcher', label: 'Feature Matching (Exhaustive)', num: '02' },
       { key: 'mapper', label: 'Sparse Point Cloud (Mapper)', num: '03' },
     ];
 
     try {
-      for (let i = 0; i < stages.length; i++) {
+      for (let i = 0; i < colmapStages.length; i++) {
         if (activeReconstructionJob.status === 'cancelled') {
           appendJobLog('system', 'Job was cancelled before stage execution.');
           break;
         }
 
-        const currentStage = stages[i];
+        const currentStage = colmapStages[i];
         activeReconstructionJob.stage = currentStage.key;
         activeReconstructionJob.stageLabel = currentStage.label;
         activeReconstructionJob.stageIndex = i + 1;
@@ -1696,7 +2020,7 @@ async function startSparseReconstructionJob(config = {}) {
           stage: currentStage.key,
           stageLabel: currentStage.label,
           stageIndex: i + 1,
-          totalStages: 3,
+          totalStages,
           elapsedMs: Date.now() - activeReconstructionJob.startTime,
           runDir,
         });
@@ -1710,63 +2034,13 @@ async function startSparseReconstructionJob(config = {}) {
           numThreads,
         });
 
-        await new Promise((resolve, reject) => {
-          let proc;
-          try {
-            proc = spawnFn(colmapExe, args, {
-              cwd: runDir,
-              shell: false,
-              windowsHide: true,
-            });
-          } catch (spawnErr) {
-            return reject(new Error(`Failed to start ${currentStage.key}: ${spawnErr.message}`));
-          }
-
-          if (activeReconstructionJob) {
-            activeReconstructionJob.currentProcess = proc;
-          }
-
-          proc.stdout?.on('data', (chunk) => {
-            const lines = chunk.toString().split(/\r?\n/);
-            for (const l of lines) {
-              if (l.trim()) appendJobLog(currentStage.key, l);
-            }
-          });
-
-          proc.stderr?.on('data', (chunk) => {
-            const lines = chunk.toString().split(/\r?\n/);
-            for (const l of lines) {
-              if (l.trim()) appendJobLog(currentStage.key, l);
-            }
-          });
-
-          proc.on('error', (err) => {
-            if (activeReconstructionJob) {
-              activeReconstructionJob.currentProcess = null;
-            }
-            reject(err);
-          });
-
-          proc.on('close', (code, signal) => {
-            if (activeReconstructionJob) {
-              activeReconstructionJob.currentProcess = null;
-            }
-            if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
-              return resolve({ cancelled: true });
-            }
-            if (code === 0) {
-              appendJobLog(currentStage.key, `Stage ${currentStage.num} finished successfully.`);
-              return resolve({ code });
-            }
-            reject(new Error(`Stage ${currentStage.key} failed with exit code ${code}${signal ? ` (${signal})` : ''}`));
-          });
-        });
+        await runSubprocess(colmapExe, args, currentStage.key);
       }
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         cleanupTemporaryJobArtifacts(runDir, { jobId });
         activeReconstructionJob.settled = true;
-        appendJobLog('system', 'Sparse reconstruction was cancelled by user.');
+        appendJobLog('system', 'Reconstruction was cancelled by user.');
         emitReconstructionProgress({
           jobId,
           status: 'cancelled',
@@ -1774,7 +2048,7 @@ async function startSparseReconstructionJob(config = {}) {
           stage: activeReconstructionJob.stage,
           stageLabel: activeReconstructionJob.stageLabel,
           stageIndex: activeReconstructionJob.stageIndex,
-          totalStages: 3,
+          totalStages,
           elapsedMs: (activeReconstructionJob.endTime || Date.now()) - activeReconstructionJob.startTime,
           error: 'Pipeline cancelled by user.',
           runDir,
@@ -1801,12 +2075,12 @@ async function startSparseReconstructionJob(config = {}) {
       // Cancellation check before model converter
       if (activeReconstructionJob.status === 'cancelled') {
         cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
         return;
       }
 
       // Export model to PLY for 3D Viewport
       const expectedPly = path.join(runDir, 'sparse.ply');
-      // Always remove any pre-existing PLY to prevent serving stale files from previous attempts
       if (fs.existsSync(expectedPly)) {
         try {
           fs.unlinkSync(expectedPly);
@@ -1821,53 +2095,11 @@ async function startSparseReconstructionJob(config = {}) {
         inputModelPath: verifyRes.modelDir,
       });
 
-      const conversionSuccess = await new Promise((resolve) => {
-        if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
-          return resolve(false);
-        }
-        let convProc;
-        try {
-          convProc = spawnFn(colmapExe, convArgs, {
-            cwd: runDir,
-            shell: false,
-            windowsHide: true,
-          });
-          if (activeReconstructionJob) {
-            activeReconstructionJob.currentProcess = convProc;
-          }
-        } catch (convSpawnErr) {
-          appendJobLog('export', `Failed to start model_converter: ${convSpawnErr.message}`);
-          return resolve(false);
-        }
-
-        convProc.stdout?.on('data', (chunk) => {
-          const lines = chunk.toString().split(/\r?\n/);
-          for (const l of lines) {
-            if (l.trim()) appendJobLog('export', l);
-          }
-        });
-
-        convProc.stderr?.on('data', (chunk) => {
-          const lines = chunk.toString().split(/\r?\n/);
-          for (const l of lines) {
-            if (l.trim()) appendJobLog('export', l);
-          }
-        });
-
-        convProc.on('close', (c) => {
-          if (activeReconstructionJob) {
-            activeReconstructionJob.currentProcess = null;
-          }
-          resolve(c === 0 && (!activeReconstructionJob || activeReconstructionJob.status !== 'cancelled'));
-        });
-        convProc.on('error', (err) => {
-          if (activeReconstructionJob) {
-            activeReconstructionJob.currentProcess = null;
-          }
-          appendJobLog('export', `model_converter process error: ${err.message}`);
-          resolve(false);
-        });
-      });
+      try {
+        await runSubprocess(colmapExe, convArgs, 'export');
+      } catch (convErr) {
+        throw new Error(`COLMAP model_converter failed to export sparse.ply: ${convErr.message}`);
+      }
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         cleanupTemporaryJobArtifacts(runDir, { jobId });
@@ -1875,7 +2107,7 @@ async function startSparseReconstructionJob(config = {}) {
         return;
       }
 
-      if (!conversionSuccess || !fs.existsSync(expectedPly)) {
+      if (!fs.existsSync(expectedPly)) {
         throw new Error('COLMAP model_converter failed to export sparse.ply from the reconstructed model.');
       }
 
@@ -1885,20 +2117,14 @@ async function startSparseReconstructionJob(config = {}) {
         throw new Error(`Exported PLY validation failed: ${plyValidation.error}`);
       }
 
-      const plyPath = path.normalize(path.resolve(expectedPly));
-      authorizedPlyPaths.add(toCanonicalPath(plyPath));
+      const sparsePlyPath = path.normalize(path.resolve(expectedPly));
+      authorizedPlyPaths.add(toCanonicalPath(sparsePlyPath));
       appendJobLog(
         'export',
-        `Exported sparse point cloud to PLY: ${plyPath} (${plyValidation.vertexCount.toLocaleString()} vertices, ${plyValidation.fileSizeBytes} bytes)`
+        `Exported sparse point cloud to PLY: ${sparsePlyPath} (${plyValidation.vertexCount.toLocaleString()} vertices, ${plyValidation.fileSizeBytes} bytes)`
       );
 
-      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
-        cleanupTemporaryJobArtifacts(runDir, { jobId });
-        activeReconstructionJob.settled = true;
-        return;
-      }
-
-      const modelStats = {
+      const sparseModelStats = {
         modelDir: verifyRes.modelDir,
         modelIndex: verifyRes.modelIndex,
         pointsCount: verifyRes.pointsCount,
@@ -1907,33 +2133,306 @@ async function startSparseReconstructionJob(config = {}) {
         qualityStatus: verifyRes.qualityStatus,
         warning: verifyRes.warning,
         vertexCount: plyValidation.vertexCount,
-        isPointCloud: plyValidation.isPointCloud,
-        isMesh: plyValidation.isMesh,
-        plyPath,
+        faceCount: 0,
+        isPointCloud: true,
+        isMesh: false,
+        plyType: 'point_cloud',
+        plyPath: sparsePlyPath,
+      };
+
+      // If target stage is sparse only, complete pipeline here
+      if (targetStage === 'sparse') {
+        if (activeReconstructionJob) {
+          activeReconstructionJob.status = 'completed';
+          activeReconstructionJob.settled = true;
+          activeReconstructionJob.endTime = Date.now();
+          activeReconstructionJob.plyPath = sparsePlyPath;
+          activeReconstructionJob.modelStats = sparseModelStats;
+        }
+
+        appendJobLog('system', '✓ Sparse Reconstruction Pipeline completed successfully!');
+
+        emitReconstructionProgress({
+          jobId,
+          status: 'completed',
+          settled: true,
+          stage: 'mapper',
+          stageLabel: 'Completed',
+          stageIndex: 3,
+          totalStages,
+          elapsedMs: activeReconstructionJob ? activeReconstructionJob.endTime - activeReconstructionJob.startTime : 0,
+          modelStats: sparseModelStats,
+          warning: verifyRes.warning,
+          plyPath: sparsePlyPath,
+          runDir,
+        });
+        return;
+      }
+
+      // --------------------------------------------------------------------------
+      // Stage 04: OpenMVS Scene Preparation (InterfaceCOLMAP)
+      // --------------------------------------------------------------------------
+      if (activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      activeReconstructionJob.stage = 'interface_colmap';
+      activeReconstructionJob.stageLabel = 'OpenMVS Scene Preparation (InterfaceCOLMAP)';
+      activeReconstructionJob.stageIndex = 4;
+
+      emitReconstructionProgress({
+        jobId,
+        status: 'running',
+        stage: 'interface_colmap',
+        stageLabel: 'OpenMVS Scene Preparation (InterfaceCOLMAP)',
+        stageIndex: 4,
+        totalStages,
+        elapsedMs: Date.now() - activeReconstructionJob.startTime,
+        runDir,
+      });
+
+      appendJobLog('interface_colmap', '--- Starting Stage 04: OpenMVS Scene Preparation (InterfaceCOLMAP) ---');
+      const scenePath = path.join(runDir, 'scene.mvs');
+      if (fs.existsSync(scenePath)) {
+        try { fs.unlinkSync(scenePath); } catch {}
+      }
+
+      const interfaceArgs = buildOpenMvsStageArgs('interface_colmap', {
+        colmapModelDir: verifyRes.modelDir,
+        scenePath,
+        imageDir: dirCheck.imageDir,
+        numThreads,
+      });
+
+      appendJobLog('interface_colmap', `Converting COLMAP model (${verifyRes.modelDir}) to OpenMVS scene (${scenePath})...`);
+      await runSubprocess(interfaceColmapExe, interfaceArgs, 'interface_colmap');
+
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      const sceneCheck = verifyOpenMvsScene(scenePath);
+      if (!sceneCheck.valid) {
+        throw new Error(sceneCheck.error);
+      }
+      appendJobLog('interface_colmap', `OpenMVS scene prepared successfully: scene.mvs (${sceneCheck.sizeBytes} bytes).`);
+
+      // --------------------------------------------------------------------------
+      // Stage 05: Dense Point Cloud (DensifyPointCloud)
+      // --------------------------------------------------------------------------
+      if (activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      activeReconstructionJob.stage = 'densify_point_cloud';
+      activeReconstructionJob.stageLabel = 'Dense Point Cloud (DensifyPointCloud)';
+      activeReconstructionJob.stageIndex = 5;
+
+      emitReconstructionProgress({
+        jobId,
+        status: 'running',
+        stage: 'densify_point_cloud',
+        stageLabel: 'Dense Point Cloud (DensifyPointCloud)',
+        stageIndex: 5,
+        totalStages,
+        elapsedMs: Date.now() - activeReconstructionJob.startTime,
+        runDir,
+      });
+
+      appendJobLog('densify_point_cloud', '--- Starting Stage 05: Dense Point Cloud (DensifyPointCloud) ---');
+      const denseScenePath = path.join(runDir, 'scene_dense.mvs');
+      const densePlyPath = path.join(runDir, 'scene_dense.ply');
+      if (fs.existsSync(denseScenePath)) {
+        try { fs.unlinkSync(denseScenePath); } catch {}
+      }
+      if (fs.existsSync(densePlyPath)) {
+        try { fs.unlinkSync(densePlyPath); } catch {}
+      }
+
+      const densifyArgs = buildOpenMvsStageArgs('densify_point_cloud', {
+        scenePath,
+        denseScenePath,
+        resolutionLevel,
+        maxResolution,
+        numThreads,
+      });
+
+      appendJobLog(
+        'densify_point_cloud',
+        `Running DensifyPointCloud (resolution-level: ${resolutionLevel}, max-res: ${maxResolution}, threads: ${numThreads})...`
+      );
+      await runSubprocess(densifyExe, densifyArgs, 'densify_point_cloud');
+
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      const denseCheck = verifyOpenMvsDenseOutput(denseScenePath, densePlyPath);
+      if (!denseCheck.valid) {
+        throw new Error(denseCheck.error);
+      }
+
+      const normDensePly = path.normalize(path.resolve(densePlyPath));
+      authorizedPlyPaths.add(toCanonicalPath(normDensePly));
+      appendJobLog(
+        'densify_point_cloud',
+        `Dense point cloud generated successfully: ${normDensePly} (${denseCheck.vertexCount.toLocaleString()} vertices, ${denseCheck.fileSizeBytes} bytes)`
+      );
+
+      const denseModelStats = {
+        modelDir: verifyRes.modelDir,
+        modelIndex: verifyRes.modelIndex,
+        pointsCount: denseCheck.vertexCount,
+        registeredImages: verifyRes.registeredImages,
+        totalInputImages: dirCheck.imageCount,
+        qualityStatus: verifyRes.qualityStatus,
+        warning: verifyRes.warning,
+        vertexCount: denseCheck.vertexCount,
+        faceCount: 0,
+        isPointCloud: true,
+        isMesh: false,
+        plyType: 'point_cloud',
+        scenePath,
+        denseScenePath,
+        densePlyPath: normDensePly,
+        plyPath: normDensePly,
+      };
+
+      if (targetStage === 'dense') {
+        if (activeReconstructionJob) {
+          activeReconstructionJob.status = 'completed';
+          activeReconstructionJob.settled = true;
+          activeReconstructionJob.endTime = Date.now();
+          activeReconstructionJob.plyPath = normDensePly;
+          activeReconstructionJob.modelStats = denseModelStats;
+        }
+
+        appendJobLog('system', '✓ Dense Point Cloud Reconstruction completed successfully!');
+
+        emitReconstructionProgress({
+          jobId,
+          status: 'completed',
+          settled: true,
+          stage: 'densify_point_cloud',
+          stageLabel: 'Completed',
+          stageIndex: 5,
+          totalStages,
+          elapsedMs: activeReconstructionJob ? activeReconstructionJob.endTime - activeReconstructionJob.startTime : 0,
+          modelStats: denseModelStats,
+          warning: verifyRes.warning,
+          plyPath: normDensePly,
+          runDir,
+        });
+        return;
+      }
+
+      // --------------------------------------------------------------------------
+      // Stage 06: Polygonal Mesh Generation (ReconstructMesh)
+      // --------------------------------------------------------------------------
+      if (activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      activeReconstructionJob.stage = 'reconstruct_mesh';
+      activeReconstructionJob.stageLabel = 'Mesh Generation (ReconstructMesh)';
+      activeReconstructionJob.stageIndex = 6;
+
+      emitReconstructionProgress({
+        jobId,
+        status: 'running',
+        stage: 'reconstruct_mesh',
+        stageLabel: 'Mesh Generation (ReconstructMesh)',
+        stageIndex: 6,
+        totalStages,
+        elapsedMs: Date.now() - activeReconstructionJob.startTime,
+        runDir,
+      });
+
+      appendJobLog('reconstruct_mesh', '--- Starting Stage 06: Polygonal Mesh Generation (ReconstructMesh) ---');
+      const meshPlyPath = path.join(runDir, 'scene_mesh.ply');
+      if (fs.existsSync(meshPlyPath)) {
+        try { fs.unlinkSync(meshPlyPath); } catch {}
+      }
+
+      const meshArgs = buildOpenMvsStageArgs('reconstruct_mesh', {
+        denseScenePath,
+        meshPlyPath,
+        numThreads,
+      });
+
+      appendJobLog('reconstruct_mesh', `Running ReconstructMesh on ${denseScenePath} (export-type: ply, threads: ${numThreads})...`);
+      await runSubprocess(reconstructMeshExe, meshArgs, 'reconstruct_mesh');
+
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      const meshCheck = verifyOpenMvsMeshOutput(meshPlyPath);
+      if (!meshCheck.valid) {
+        throw new Error(meshCheck.error);
+      }
+
+      const normMeshPly = path.normalize(path.resolve(meshPlyPath));
+      authorizedPlyPaths.add(toCanonicalPath(normMeshPly));
+      appendJobLog(
+        'reconstruct_mesh',
+        `Polygonal mesh generated successfully: ${normMeshPly} (${meshCheck.vertexCount.toLocaleString()} vertices, ${meshCheck.faceCount.toLocaleString()} faces, ${meshCheck.fileSizeBytes} bytes)`
+      );
+
+      const meshModelStats = {
+        modelDir: verifyRes.modelDir,
+        modelIndex: verifyRes.modelIndex,
+        pointsCount: denseCheck.vertexCount,
+        registeredImages: verifyRes.registeredImages,
+        totalInputImages: dirCheck.imageCount,
+        qualityStatus: verifyRes.qualityStatus,
+        warning: verifyRes.warning,
+        vertexCount: meshCheck.vertexCount,
+        faceCount: meshCheck.faceCount,
+        isPointCloud: false,
+        isMesh: true,
+        plyType: 'mesh',
+        scenePath,
+        denseScenePath,
+        densePlyPath: normDensePly,
+        meshPlyPath: normMeshPly,
+        plyPath: normMeshPly,
       };
 
       if (activeReconstructionJob) {
         activeReconstructionJob.status = 'completed';
         activeReconstructionJob.settled = true;
         activeReconstructionJob.endTime = Date.now();
-        activeReconstructionJob.plyPath = plyPath;
-        activeReconstructionJob.modelStats = modelStats;
+        activeReconstructionJob.plyPath = normMeshPly;
+        activeReconstructionJob.modelStats = meshModelStats;
       }
 
-      appendJobLog('system', '✓ Sparse Reconstruction Pipeline completed successfully!');
+      appendJobLog('system', '✓ Polygonal Mesh Generation completed successfully!');
 
       emitReconstructionProgress({
         jobId,
         status: 'completed',
         settled: true,
-        stage: 'mapper',
+        stage: 'reconstruct_mesh',
         stageLabel: 'Completed',
-        stageIndex: 3,
-        totalStages: 3,
+        stageIndex: 6,
+        totalStages,
         elapsedMs: activeReconstructionJob ? activeReconstructionJob.endTime - activeReconstructionJob.startTime : 0,
-        modelStats,
+        modelStats: meshModelStats,
         warning: verifyRes.warning,
-        plyPath,
+        plyPath: normMeshPly,
         runDir,
       });
     } catch (err) {
@@ -1953,7 +2452,7 @@ async function startSparseReconstructionJob(config = {}) {
           stage: activeReconstructionJob.stage,
           stageLabel: activeReconstructionJob.stageLabel,
           stageIndex: activeReconstructionJob.stageIndex,
-          totalStages: 3,
+          totalStages,
           elapsedMs: activeReconstructionJob.endTime - activeReconstructionJob.startTime,
           error: err.message,
           runDir,
@@ -1965,6 +2464,7 @@ async function startSparseReconstructionJob(config = {}) {
   return {
     success: true,
     jobId,
+    targetStage,
     imageDir: dirCheck.imageDir,
     outputDir: dirCheck.workspaceDir,
     runDir: dirCheck.runDir,
@@ -3323,7 +3823,7 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
 });
 
   /**
-   * 10. Sprint 6B: Start Sparse Reconstruction Pipeline
+   * 10. Sprint 6B & Sprint 9: Start Reconstruction Pipeline (Sparse, Dense, Mesh)
    */
   ipcMain.handle('reconstruction:start', async (event, config = {}) => {
     if (activeReconstructionJob && activeReconstructionJob.status === 'running') {
@@ -3333,12 +3833,17 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
       };
     }
 
+    const targetStage = ['sparse', 'dense', 'mesh'].includes(config.targetStage) ? config.targetStage : 'sparse';
     const sanitized = {
       imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
       outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
       runDir: typeof config.runDir === 'string' ? config.runDir.trim() : null,
       customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
-      numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= 8 ? config.numThreads : 4,
+      customOpenmvsPath: typeof config.customOpenmvsPath === 'string' ? config.customOpenmvsPath.trim() : null,
+      targetStage,
+      resolutionLevel: Number.isInteger(config.resolutionLevel) && config.resolutionLevel >= 1 && config.resolutionLevel <= 4 ? config.resolutionLevel : 1,
+      maxResolution: Number.isInteger(config.maxResolution) && config.maxResolution >= 640 && config.maxResolution <= 2560 ? config.maxResolution : 1920,
+      numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= 4 ? config.numThreads : 4,
     };
 
     return await startSparseReconstructionJob(sanitized);
@@ -3590,6 +4095,7 @@ module.exports = {
   validateExportedPly,
   evaluateModelQuality,
   startSparseReconstructionJob,
+  startReconstructionJob: startSparseReconstructionJob,
   cancelSparseReconstructionJob,
   getReconstructionStatusJob,
   terminateProcessTree,
@@ -3598,6 +4104,11 @@ module.exports = {
   detectColmapTool,
   detectOpenMvsTool,
   inspectOpenMvsModules,
+  checkFreeDiskSpace,
+  buildOpenMvsStageArgs,
+  verifyOpenMvsScene,
+  verifyOpenMvsDenseOutput,
+  verifyOpenMvsMeshOutput,
   toCanonicalPath,
   authorizedPlyPaths,
   RUN_MANIFEST_FILENAME,

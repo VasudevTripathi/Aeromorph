@@ -246,8 +246,8 @@ export async function selectWorkspaceDirectory() {
 }
 
 /**
- * Launch sparse reconstruction job (Sprint 6B)
- * @param {Object} config - { imageDir: string, outputDir: string, customColmapPath?: string, numThreads?: number }
+ * Launch reconstruction job (Sprint 6B & Sprint 9: Sparse, Dense, Mesh)
+ * @param {Object} config - { imageDir: string, outputDir: string, customColmapPath?: string, customOpenmvsPath?: string, targetStage?: string, resolutionLevel?: number, maxResolution?: number, numThreads?: number }
  * @returns {Promise<{ success: boolean, jobId?: string, error?: string }>}
  */
 export async function startSparseReconstruction(config) {
@@ -255,7 +255,7 @@ export async function startSparseReconstruction(config) {
     try {
       return await window.aeromorphAPI.startSparseReconstruction(config);
     } catch (err) {
-      console.error('Aeromorph Desktop: Failed to start sparse reconstruction:', err);
+      console.error('Aeromorph Desktop: Failed to start reconstruction:', err);
       return { success: false, error: err.message };
     }
   }
@@ -265,6 +265,8 @@ export async function startSparseReconstruction(config) {
     error: 'Reconstruction pipeline execution requires the Aeromorph Desktop application.',
   };
 }
+
+export const startReconstruction = startSparseReconstruction;
 
 /**
  * Cancel active reconstruction job

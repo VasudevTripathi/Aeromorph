@@ -22,6 +22,7 @@ export default function ReconstructionStudio({
   onNavigateImport,
 }) {
   const [activeStage, setActiveStage] = useState('sparse_reconstruction');
+  const [targetStage, setTargetStage] = useState('mesh'); // 'sparse' | 'dense' | 'mesh'
   const [jobStatus, setJobStatus] = useState('idle'); // 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
   const [activeStageKey, setActiveStageKey] = useState(null);
   const [activeStageLabel, setActiveStageLabel] = useState(null);
@@ -67,12 +68,20 @@ export default function ReconstructionStudio({
       if (data.status === 'completed') {
         setModelStats(data.modelStats || null);
         if (data.plyPath && onAttachNativePly) {
+          const isMesh = Boolean(data.modelStats?.isMesh);
+          const isPointCloud = Boolean(data.modelStats?.isPointCloud ?? !isMesh);
+          const defaultName = isMesh
+            ? 'scene_mesh.ply'
+            : (data.plyPath.includes('dense') ? 'scene_dense.ply' : 'sparse.ply');
+
           onAttachNativePly({
             path: data.plyPath,
-            name: 'sparse.ply',
-            sizeBytes: data.modelStats?.pointsSize || 0,
-            isMesh: Boolean(data.modelStats?.isMesh),
-            isPointCloud: Boolean(data.modelStats?.isPointCloud ?? true),
+            name: defaultName,
+            sizeBytes: data.modelStats?.fileSizeBytes || data.modelStats?.pointsSize || 0,
+            isMesh,
+            isPointCloud,
+            vertexCount: data.modelStats?.vertexCount,
+            faceCount: data.modelStats?.faceCount || 0,
             lastModified: Date.now(),
           });
         }
@@ -130,7 +139,7 @@ export default function ReconstructionStudio({
     return null;
   };
 
-  // Launch sparse reconstruction pipeline
+  // Launch reconstruction pipeline
   const handleStartPipeline = async () => {
     if (!currentProject) {
       alert('Please create or select an active project first.');
@@ -147,7 +156,7 @@ export default function ReconstructionStudio({
 
     let outputDir = currentProject.outputDirectoryReference?.path;
     if (!outputDir) {
-      alert('Please select a dedicated output workspace folder for COLMAP files.');
+      alert('Please select a dedicated output workspace folder for COLMAP and OpenMVS files.');
       outputDir = await handleSelectWorkspace();
       if (!outputDir) return; // User canceled
     }
@@ -162,7 +171,10 @@ export default function ReconstructionStudio({
     const result = await startSparseReconstruction({
       imageDir,
       outputDir,
+      targetStage,
       numThreads: 4,
+      resolutionLevel: 1,
+      maxResolution: 1920,
     });
 
     if (!result.success) {
@@ -174,7 +186,7 @@ export default function ReconstructionStudio({
 
   // Cancel running pipeline
   const handleCancelPipeline = async () => {
-    if (window.confirm('Cancel active COLMAP reconstruction? Any running subprocesses will be terminated.')) {
+    if (window.confirm('Cancel active reconstruction? Any running subprocesses will be terminated.')) {
       await cancelSparseReconstruction();
       setJobStatus('cancelled');
     }
@@ -197,6 +209,8 @@ export default function ReconstructionStudio({
         currentProject={currentProject}
         jobStatus={jobStatus}
         activeStageKey={activeStageKey}
+        targetStage={targetStage}
+        onTargetStageChange={setTargetStage}
         elapsedSeconds={elapsedSeconds}
         onStartPipeline={handleStartPipeline}
         onCancelPipeline={handleCancelPipeline}
@@ -250,9 +264,20 @@ export default function ReconstructionStudio({
             )}
 
             {currentProject?.modelFileReference && (
-              <span className="studio-asset-pill mesh" title={`Model: ${currentProject.modelFileReference.name}`}>
+              <span
+                className="studio-asset-pill"
+                style={{
+                  background: currentProject.modelFileReference.isMesh ? 'rgba(168, 85, 247, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+                  color: currentProject.modelFileReference.isMesh ? '#c084fc' : '#38bdf8',
+                  border: `1px solid ${currentProject.modelFileReference.isMesh ? 'rgba(168, 85, 247, 0.3)' : 'rgba(56, 189, 248, 0.3)'}`,
+                }}
+                title={`Model: ${currentProject.modelFileReference.name} (${currentProject.modelFileReference.isMesh ? 'Polygonal Mesh' : 'Point Cloud'})`}
+              >
                 <Box size={11} />
-                <span>{currentProject.modelFileReference.name} ({formatFileSize(currentProject.modelFileReference.sizeBytes)})</span>
+                <span>
+                  {currentProject.modelFileReference.isMesh ? 'Mesh: ' : 'Point Cloud: '}
+                  {currentProject.modelFileReference.name} ({formatFileSize(currentProject.modelFileReference.sizeBytes)})
+                </span>
               </span>
             )}
           </div>

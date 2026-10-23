@@ -1,5 +1,5 @@
 import React from 'react';
-import { Settings2, Play, Box, FolderSearch, StopCircle, Loader2, CheckCircle2, AlertTriangle, Clock } from 'lucide-react';
+import { Settings2, Play, Box, FolderSearch, StopCircle, Loader2, CheckCircle2, AlertTriangle, Clock, Layers, Sparkles } from 'lucide-react';
 
 export default function PipelineSidebar({
   activeStage = null,
@@ -7,6 +7,8 @@ export default function PipelineSidebar({
   currentProject = null,
   jobStatus = 'idle',
   activeStageKey = null,
+  targetStage = 'mesh',
+  onTargetStageChange = null,
   elapsedSeconds = 0,
   onStartPipeline,
   onCancelPipeline,
@@ -14,37 +16,65 @@ export default function PipelineSidebar({
 }) {
   const isRunning = jobStatus === 'running';
 
-  // Determine stage status based on active reconstruction state
-  const getStageStatus = (stageId, stageNum) => {
+  // Determine stage status based on active reconstruction state and target depth
+  const getStageStatus = (stageId) => {
     if (jobStatus === 'cancelled') {
       if (activeStageKey === 'feature_extractor' && stageId === 'feature_extraction') return 'cancelled';
       if (activeStageKey === 'exhaustive_matcher' && stageId === 'feature_matching') return 'cancelled';
       if (activeStageKey === 'mapper' && stageId === 'sparse_reconstruction') return 'cancelled';
+      if (activeStageKey === 'interface_colmap' && stageId === 'openmvs_interface') return 'cancelled';
+      if (activeStageKey === 'densify_point_cloud' && stageId === 'dense_reconstruction') return 'cancelled';
+      if (activeStageKey === 'reconstruct_mesh' && stageId === 'mesh_reconstruction') return 'cancelled';
       return 'pending';
     }
 
     if (stageId === 'feature_extraction') {
       if (activeStageKey === 'feature_extractor' && isRunning) return 'running';
-      if (jobStatus === 'completed' || (isRunning && (activeStageKey === 'exhaustive_matcher' || activeStageKey === 'mapper'))) return 'done';
+      if (jobStatus === 'completed' || (isRunning && activeStageKey !== 'feature_extractor')) return 'done';
       if (jobStatus === 'failed' && activeStageKey === 'feature_extractor') return 'failed';
       return 'pending';
     }
+
     if (stageId === 'feature_matching') {
       if (activeStageKey === 'exhaustive_matcher' && isRunning) return 'running';
-      if (jobStatus === 'completed' || (isRunning && activeStageKey === 'mapper')) return 'done';
+      if (jobStatus === 'completed' || (isRunning && !['feature_extractor', 'exhaustive_matcher'].includes(activeStageKey))) return 'done';
       if (jobStatus === 'failed' && activeStageKey === 'exhaustive_matcher') return 'failed';
       return 'pending';
     }
+
     if (stageId === 'sparse_reconstruction') {
       if (activeStageKey === 'mapper' && isRunning) return 'running';
-      if (jobStatus === 'completed') return 'done';
+      if (jobStatus === 'completed' || (isRunning && ['interface_colmap', 'densify_point_cloud', 'reconstruct_mesh'].includes(activeStageKey))) return 'done';
       if (jobStatus === 'failed' && activeStageKey === 'mapper') return 'failed';
       return 'pending';
     }
+
+    if (stageId === 'openmvs_interface') {
+      if (targetStage === 'sparse') return 'not_requested';
+      if (activeStageKey === 'interface_colmap' && isRunning) return 'running';
+      if (jobStatus === 'completed' || (isRunning && ['densify_point_cloud', 'reconstruct_mesh'].includes(activeStageKey))) return 'done';
+      if (jobStatus === 'failed' && activeStageKey === 'interface_colmap') return 'failed';
+      return 'pending';
+    }
+
+    if (stageId === 'dense_reconstruction') {
+      if (targetStage === 'sparse') return 'not_requested';
+      if (activeStageKey === 'densify_point_cloud' && isRunning) return 'running';
+      if (jobStatus === 'completed' || (isRunning && activeStageKey === 'reconstruct_mesh')) return 'done';
+      if (jobStatus === 'failed' && activeStageKey === 'densify_point_cloud') return 'failed';
+      return 'pending';
+    }
+
     if (stageId === 'mesh_reconstruction') {
-      // Only mark ready if an actual polygonal mesh is attached (not sparse.ply)
+      if (targetStage !== 'mesh') {
+        return currentProject?.modelFileReference?.isMesh ? 'ready' : 'not_requested';
+      }
+      if (activeStageKey === 'reconstruct_mesh' && isRunning) return 'running';
+      if (jobStatus === 'completed') return 'done';
+      if (jobStatus === 'failed' && activeStageKey === 'reconstruct_mesh') return 'failed';
       return currentProject?.modelFileReference?.isMesh ? 'ready' : 'pending';
     }
+
     return 'pending';
   };
 
@@ -54,7 +84,7 @@ export default function PipelineSidebar({
       num: '01',
       name: 'Feature Extraction',
       engine: 'COLMAP (SIFT)',
-      status: getStageStatus('feature_extraction', 1),
+      status: getStageStatus('feature_extraction'),
       stats: 'SIFT keypoints & descriptors (CPU-only)',
     },
     {
@@ -62,7 +92,7 @@ export default function PipelineSidebar({
       num: '02',
       name: 'Feature Matching',
       engine: 'COLMAP Exhaustive',
-      status: getStageStatus('feature_matching', 2),
+      status: getStageStatus('feature_matching'),
       stats: 'Two-view geometric verification',
     },
     {
@@ -70,36 +100,36 @@ export default function PipelineSidebar({
       num: '03',
       name: 'Sparse Point Cloud (SfM)',
       engine: 'COLMAP Mapper',
-      status: getStageStatus('sparse_reconstruction', 3),
-      stats: jobStatus === 'completed' && currentProject?.modelFileReference
-        ? `Point Cloud ready (${currentProject.modelFileReference.name})`
-        : 'Incremental camera pose & 3D triangulation',
+      status: getStageStatus('sparse_reconstruction'),
+      stats: 'Incremental triangulation & camera poses',
+    },
+    {
+      id: 'openmvs_interface',
+      num: '04',
+      name: 'Scene Preparation',
+      engine: 'OpenMVS InterfaceCOLMAP',
+      status: getStageStatus('openmvs_interface'),
+      stats: targetStage === 'sparse' ? 'Not requested (Sparse target)' : 'Exports COLMAP model to scene.mvs',
     },
     {
       id: 'dense_reconstruction',
-      num: '04',
+      num: '05',
       name: 'Dense Point Cloud',
       engine: 'OpenMVS Densify',
-      status: 'pending',
-      stats: 'Planned (Sprint 6C)',
+      status: getStageStatus('dense_reconstruction'),
+      stats: targetStage === 'sparse'
+        ? 'Not requested (Sparse target)'
+        : 'Multi-view stereo dense point cloud',
     },
     {
       id: 'mesh_reconstruction',
-      num: '05',
+      num: '06',
       name: 'Mesh Generation',
       engine: 'OpenMVS ReconstructMesh',
-      status: currentProject?.modelFileReference?.isMesh ? 'ready' : 'pending',
-      stats: currentProject?.modelFileReference?.isMesh
-        ? `Attached Mesh: ${currentProject.modelFileReference.name}`
-        : 'Planned (Sprint 6C)',
-    },
-    {
-      id: 'texture_mapping',
-      num: '06',
-      name: 'Texture Mapping',
-      engine: 'OpenMVS TextureMesh',
-      status: 'pending',
-      stats: 'Planned (Future phase)',
+      status: getStageStatus('mesh_reconstruction'),
+      stats: targetStage !== 'mesh'
+        ? (currentProject?.modelFileReference?.isMesh ? `Attached: ${currentProject.modelFileReference.name}` : 'Not requested for this run')
+        : 'Surface Delaunay & graph-cut polygonal mesh',
     },
   ];
 
@@ -117,7 +147,7 @@ export default function PipelineSidebar({
       <div className="sidebar-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
           <span className="sidebar-title">Pipeline Stages</span>
-          <span className="sidebar-sample-pill">Sprint 6B</span>
+          <span className="sidebar-sample-pill">Sprint 9</span>
         </div>
         <button type="button" className="btn-ghost" title="Pipeline parameters">
           <Settings2 size={13} />
@@ -134,6 +164,31 @@ export default function PipelineSidebar({
           <span className="sidebar-project-name" title={currentProject ? currentProject.name : 'Default Workspace'}>
             {currentProject ? currentProject.name : 'Default Workspace'}
           </span>
+        </div>
+      </div>
+
+      {/* Target Stage Depth Selector */}
+      <div style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Pipeline Target:</span>
+          <select
+            value={targetStage}
+            onChange={(e) => onTargetStageChange && onTargetStageChange(e.target.value)}
+            disabled={isRunning}
+            style={{
+              background: 'var(--bg-primary, #0f172a)',
+              color: 'var(--accent, #38bdf8)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '4px',
+              padding: '2px 6px',
+              fontSize: '11px',
+              cursor: isRunning ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <option value="mesh">Mesh (Dense + Mesh)</option>
+            <option value="dense">Dense Cloud Only</option>
+            <option value="sparse">Sparse Cloud Only</option>
+          </select>
         </div>
       </div>
 
@@ -158,7 +213,7 @@ export default function PipelineSidebar({
               className="btn-ghost"
               style={{ fontSize: '10.5px', padding: '1px 5px', color: 'var(--color-warning)' }}
               onClick={onSelectWorkspace}
-              title="Select a dedicated folder for COLMAP output files"
+              title="Select a dedicated folder for COLMAP and OpenMVS output files"
             >
               + Set Output
             </button>
@@ -172,20 +227,40 @@ export default function PipelineSidebar({
           const isCurrentRunning = stage.status === 'running';
           const isDone = stage.status === 'done';
           const isFailed = stage.status === 'failed';
+          const isNotRequested = stage.status === 'not_requested';
+
+          let badgeClass = 'idle';
+          let badgeText = 'Pending';
+          if (isCurrentRunning) {
+            badgeClass = 'running';
+            badgeText = 'Running';
+          } else if (isDone) {
+            badgeClass = 'done';
+            badgeText = 'Done';
+          } else if (isFailed) {
+            badgeClass = 'failed';
+            badgeText = 'Failed';
+          } else if (stage.status === 'ready') {
+            badgeClass = 'ready';
+            badgeText = 'Ready';
+          } else if (isNotRequested) {
+            badgeClass = 'idle';
+            badgeText = 'Skipped';
+          }
 
           return (
             <div
               key={stage.id}
-              className={`stage-item ${isDone ? 'completed' : ''} ${isCurrentRunning ? 'active' : ''}`}
+              className={`stage-item ${isDone ? 'completed' : ''} ${isCurrentRunning ? 'active' : ''} ${isNotRequested ? 'disabled' : ''}`}
             >
               <div className="stage-top">
                 <div className="stage-name-group">
                   <span className="stage-number">{stage.num}</span>
                   <span className="stage-title">{stage.name}</span>
                 </div>
-                <span className={`stage-badge ${isDone ? 'done' : (isCurrentRunning ? 'running' : (isFailed ? 'failed' : 'idle'))}`}>
+                <span className={`stage-badge ${badgeClass}`}>
                   {isCurrentRunning && <Loader2 size={10} className="animate-spin" style={{ marginRight: '3px' }} />}
-                  {isDone ? 'Done' : (isCurrentRunning ? 'Running' : (isFailed ? 'Failed' : (stage.status === 'ready' ? 'Ready' : 'Pending')))}
+                  {badgeText}
                 </span>
               </div>
               <div className="stage-detail">
@@ -204,8 +279,12 @@ export default function PipelineSidebar({
             <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>4 CPU Threads</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>Target RAM Cap</span>
-            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>6.0 GB (8 GB Host)</span>
+            <span>RAM Safeguard</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>8 GB Safe Profile</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>OpenMVS Setting</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Level 1 / 1920px</span>
           </div>
           {isRunning && (
             <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--accent)', marginTop: '2px' }}>
@@ -224,7 +303,7 @@ export default function PipelineSidebar({
             className="btn-secondary"
             onClick={onCancelPipeline}
             style={{ width: '100%', marginTop: '4px', borderColor: 'var(--color-danger, #ef4444)', color: 'var(--color-danger, #f87171)' }}
-            title="Terminate COLMAP reconstruction subprocesses"
+            title="Terminate active reconstruction subprocesses"
           >
             <StopCircle size={13} />
             <span>Cancel Reconstruction</span>
@@ -235,10 +314,12 @@ export default function PipelineSidebar({
             className="btn-primary"
             onClick={onStartPipeline}
             style={{ width: '100%', marginTop: '4px' }}
-            title="Run COLMAP feature extraction, matching, and mapper on CPU"
+            title={targetStage === 'mesh' ? 'Run COLMAP + OpenMVS Densify + ReconstructMesh' : (targetStage === 'dense' ? 'Run COLMAP + OpenMVS Densify' : 'Run COLMAP Sparse Reconstruction')}
           >
             <Play size={13} />
-            <span>Launch Sparse Pipeline (6B)</span>
+            <span>
+              {targetStage === 'mesh' ? 'Launch Mesh Pipeline (Sprint 9)' : (targetStage === 'dense' ? 'Launch Dense Pipeline' : 'Launch Sparse Pipeline')}
+            </span>
           </button>
         )}
       </div>

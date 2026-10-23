@@ -109,8 +109,8 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
   selectWorkspaceDirectory: () => ipcRenderer.invoke('dialog:selectWorkspaceDirectory'),
 
   /**
-   * Launch sparse COLMAP reconstruction pipeline (Sprint 6B)
-   * @param {Object} config - { imageDir: string, outputDir: string, customColmapPath?: string, numThreads?: number }
+   * Launch reconstruction pipeline (Sparse COLMAP, Dense Point Cloud, Mesh Generation)
+   * @param {Object} config - { imageDir: string, outputDir: string, customColmapPath?: string, customOpenmvsPath?: string, targetStage?: string, resolutionLevel?: number, maxResolution?: number, numThreads?: number }
    * @returns {Promise<{ success: boolean, jobId?: string, error?: string }>}
    */
   startSparseReconstruction: (config = {}) => {
@@ -121,6 +121,30 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
       imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
       outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
       customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
+      customOpenmvsPath: typeof config.customOpenmvsPath === 'string' ? config.customOpenmvsPath.trim() : null,
+      targetStage: typeof config.targetStage === 'string' ? config.targetStage.trim() : 'sparse',
+      resolutionLevel: typeof config.resolutionLevel === 'number' ? config.resolutionLevel : 1,
+      maxResolution: typeof config.maxResolution === 'number' ? config.maxResolution : 1920,
+      numThreads: typeof config.numThreads === 'number' ? config.numThreads : 4,
+    };
+    return ipcRenderer.invoke('reconstruction:start', sanitized);
+  },
+
+  /**
+   * Alias for startSparseReconstruction
+   */
+  startReconstruction: (config = {}) => {
+    if (!config || typeof config !== 'object') {
+      return Promise.reject(new Error('Invalid reconstruction configuration argument.'));
+    }
+    const sanitized = {
+      imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
+      outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
+      customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
+      customOpenmvsPath: typeof config.customOpenmvsPath === 'string' ? config.customOpenmvsPath.trim() : null,
+      targetStage: typeof config.targetStage === 'string' ? config.targetStage.trim() : 'sparse',
+      resolutionLevel: typeof config.resolutionLevel === 'number' ? config.resolutionLevel : 1,
+      maxResolution: typeof config.maxResolution === 'number' ? config.maxResolution : 1920,
       numThreads: typeof config.numThreads === 'number' ? config.numThreads : 4,
     };
     return ipcRenderer.invoke('reconstruction:start', sanitized);
