@@ -180,6 +180,40 @@ def compute_blur_score(gray: np.ndarray) -> float:
     return float(np.var(lap))
 
 
+def compute_exposure_metrics(gray: np.ndarray) -> Dict[str, Any]:
+    """Compute mean brightness, contrast standard deviation, and exposure status category."""
+    if gray.size == 0:
+        return {
+            "mean_brightness": 0.0,
+            "contrast_std": 0.0,
+            "exposure_status": "unknown",
+            "warnings": [],
+        }
+
+    b_mean = round(float(np.mean(gray)), 2)
+    c_std = round(float(np.std(gray)), 2)
+    warnings = []
+
+    if b_mean < UNDER_EXPOSED_MEAN:
+        status = "under_exposed"
+        warnings.append(f"Under-exposed / dark image (mean brightness {b_mean}/255). SIFT features in shadows may fail to match.")
+    elif b_mean > OVER_EXPOSED_MEAN:
+        status = "over_exposed"
+        warnings.append(f"Over-exposed / blown highlights (mean brightness {b_mean}/255). Washed-out textures lack distinct features.")
+    elif c_std < LOW_CONTRAST_STD:
+        status = "low_contrast"
+        warnings.append(f"Low contrast / washed out (std {c_std}). Flat surfaces may cause feature tracking failure.")
+    else:
+        status = "good"
+
+    return {
+        "mean_brightness": b_mean,
+        "contrast_std": c_std,
+        "exposure_status": status,
+        "warnings": warnings,
+    }
+
+
 def analyze_image_quality(file_path: str | Path) -> Dict[str, Any]:
     """
     Perform complete image quality analysis on a single image file.

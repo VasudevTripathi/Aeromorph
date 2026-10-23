@@ -247,4 +247,96 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
     ipcRenderer.on('cv:log', subscription);
     return () => ipcRenderer.removeListener('cv:log', subscription);
   },
+
+  /**
+   * Prompt user with native Windows file picker for video file (Sprint 8)
+   * @returns {Promise<{ canceled: boolean, path?: string, name?: string, sizeBytes?: number, extension?: string, error?: string }>}
+   */
+  selectVideoFile: () => ipcRenderer.invoke('dialog:selectVideoFile'),
+
+  /**
+   * Validate a video file path without launching file picker (Sprint 8)
+   * @param {string} videoPath - Path to video file
+   * @returns {Promise<{ valid: boolean, accessible: boolean, path?: string, name?: string, sizeBytes?: number, extension?: string, error?: string }>}
+   */
+  validateVideoFile: (videoPath) => {
+    if (typeof videoPath !== 'string' || !videoPath.trim() || videoPath.includes('\0')) {
+      return Promise.reject(new Error('Invalid video path argument'));
+    }
+    return ipcRenderer.invoke('system:validateVideoFile', videoPath.trim());
+  },
+
+  /**
+   * Launch local Python video frame extraction worker (Sprint 8)
+   * @param {Object} config - { videoPath: string, outputDir?: string, reportPath?: string, samplingInterval?: number, maxFrames?: number, minDimension?: number, blurThreshold?: number, maxHamming?: number, enableBlurFilter?: boolean, enableDuplicateFilter?: boolean, customPythonPath?: string }
+   * @returns {Promise<{ success: boolean, jobId?: string, videoPath?: string, outputDir?: string, reportPath?: string, error?: string }>}
+   */
+  startVideoExtraction: (config = {}) => {
+    if (!config || typeof config !== 'object') {
+      return Promise.reject(new Error('Invalid extraction configuration argument.'));
+    }
+    const sanitized = {
+      videoPath: typeof config.videoPath === 'string' ? config.videoPath.trim() : '',
+      outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : null,
+      reportPath: typeof config.reportPath === 'string' ? config.reportPath.trim() : null,
+      customPythonPath: typeof config.customPythonPath === 'string' ? config.customPythonPath.trim() : null,
+      samplingInterval: typeof config.samplingInterval === 'number' ? config.samplingInterval : 1.0,
+      maxFrames: Number.isInteger(config.maxFrames) ? config.maxFrames : null,
+      minDimension: Number.isInteger(config.minDimension) ? config.minDimension : 100,
+      blurThreshold: typeof config.blurThreshold === 'number' ? config.blurThreshold : 50.0,
+      maxHamming: typeof config.maxHamming === 'number' ? config.maxHamming : 8,
+      enableBlurFilter: config.enableBlurFilter !== false,
+      enableDuplicateFilter: config.enableDuplicateFilter !== false,
+    };
+    return ipcRenderer.invoke('video:startExtraction', sanitized);
+  },
+
+  /**
+   * Cancel active video extraction worker (Sprint 8)
+   * @returns {Promise<{ canceled: boolean, message?: string }>}
+   */
+  cancelVideoExtraction: () => ipcRenderer.invoke('video:cancelExtraction'),
+
+  /**
+   * Get active video extraction worker status, progress, and report (Sprint 8)
+   * @returns {Promise<{ id?: string, status: string, settled?: boolean, progress?: Object, report?: Object, logs: Array }>}
+   */
+  getVideoExtractionStatus: () => ipcRenderer.invoke('video:getStatus'),
+
+  /**
+   * Read structured Video Extraction JSON report from validated path (Sprint 8)
+   * @param {string} reportPath - Path to generated report JSON
+   * @returns {Promise<{ success: boolean, report?: Object, error?: string }>}
+   */
+  readVideoReport: (reportPath) => {
+    if (typeof reportPath !== 'string' || !reportPath.trim() || reportPath.includes('\0')) {
+      return Promise.reject(new Error('Invalid report path argument'));
+    }
+    return ipcRenderer.invoke('video:readReport', reportPath.trim());
+  },
+
+  /**
+   * Subscribe to live video frame extraction progress events (Sprint 8)
+   * @param {Function} callback - (progressData) => void
+   * @returns {Function} Unsubscribe function
+   */
+  onVideoProgress: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const subscription = (_event, data) => callback(data);
+    ipcRenderer.on('video:progress', subscription);
+    return () => ipcRenderer.removeListener('video:progress', subscription);
+  },
+
+  /**
+   * Subscribe to live video frame extraction log streaming events (Sprint 8)
+   * @param {Function} callback - (logEntry) => void
+   * @returns {Function} Unsubscribe function
+   */
+  onVideoLog: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const subscription = (_event, entry) => callback(entry);
+    ipcRenderer.on('video:log', subscription);
+    return () => ipcRenderer.removeListener('video:log', subscription);
+  },
 });
+

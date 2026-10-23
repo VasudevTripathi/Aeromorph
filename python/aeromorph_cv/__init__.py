@@ -11,4 +11,5 @@ __all__ = [
     "frame_filter",
     "feature_analysis",
     "pipeline",
+    "video_extractor",
 ]

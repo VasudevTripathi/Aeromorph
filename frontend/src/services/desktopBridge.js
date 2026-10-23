@@ -475,3 +475,142 @@ export function subscribeCvLog(callback) {
   return () => {};
 }
 
+// ------------------------------------------------------------------------------
+// Sprint 8: Video Import & Frame Extraction Bridge Functions
+// ------------------------------------------------------------------------------
+
+/**
+ * Prompt user to select an input video file via native file dialog (Sprint 8)
+ * @returns {Promise<{ canceled: boolean, path?: string, name?: string, sizeBytes?: number, extension?: string, error?: string }>}
+ */
+export async function selectVideoFile() {
+  if (isElectron && window.aeromorphAPI?.selectVideoFile) {
+    try {
+      return await window.aeromorphAPI.selectVideoFile();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting video file:', err);
+      return { canceled: true, error: err.message };
+    }
+  }
+
+  return {
+    canceled: true,
+    error: 'Native video selection requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Validate candidate video file path
+ * @param {string} videoPath
+ * @returns {Promise<{ valid: boolean, accessible: boolean, path?: string, name?: string, sizeBytes?: number, extension?: string, error?: string }>}
+ */
+export async function validateVideoFile(videoPath) {
+  if (isElectron && window.aeromorphAPI?.validateVideoFile) {
+    try {
+      return await window.aeromorphAPI.validateVideoFile(videoPath);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error validating video file:', err);
+      return { valid: false, accessible: false, error: err.message };
+    }
+  }
+
+  return { valid: false, accessible: false, error: 'Video validation requires the Aeromorph Desktop application.' };
+}
+
+/**
+ * Start Video Frame Extraction Worker (Sprint 8)
+ * @param {Object} config - { videoPath: string, outputDir?: string, samplingInterval?: number, maxFrames?: number, minDimension?: number, blurThreshold?: number, maxHamming?: number, enableBlurFilter?: boolean, enableDuplicateFilter?: boolean, customPythonPath?: string }
+ * @returns {Promise<{ success: boolean, jobId?: string, videoPath?: string, outputDir?: string, reportPath?: string, error?: string }>}
+ */
+export async function startVideoExtraction(config) {
+  if (isElectron && window.aeromorphAPI?.startVideoExtraction) {
+    try {
+      return await window.aeromorphAPI.startVideoExtraction(config);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to start video extraction:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Video extraction requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Cancel active Video Extraction Worker
+ * @returns {Promise<{ canceled: boolean, message?: string }>}
+ */
+export async function cancelVideoExtraction() {
+  if (isElectron && window.aeromorphAPI?.cancelVideoExtraction) {
+    try {
+      return await window.aeromorphAPI.cancelVideoExtraction();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to cancel video extraction:', err);
+      return { canceled: false, error: err.message };
+    }
+  }
+
+  return { canceled: false, error: 'Video extraction cancellation requires the Aeromorph Desktop application.' };
+}
+
+/**
+ * Get active Video Extraction Worker status, progress, and report
+ * @returns {Promise<{ id?: string, status: string, settled?: boolean, progress?: Object, report?: Object, logs: Array }>}
+ */
+export async function getVideoExtractionStatus() {
+  if (isElectron && window.aeromorphAPI?.getVideoExtractionStatus) {
+    try {
+      return await window.aeromorphAPI.getVideoExtractionStatus();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to get video extraction status:', err);
+      return { status: 'idle', logs: [] };
+    }
+  }
+
+  return { status: 'idle', logs: [] };
+}
+
+/**
+ * Read structured Video Extraction JSON report from validated path
+ * @param {string} reportPath - Path to report file
+ * @returns {Promise<{ success: boolean, report?: Object, error?: string }>}
+ */
+export async function readVideoReport(reportPath) {
+  if (isElectron && window.aeromorphAPI?.readVideoReport) {
+    try {
+      return await window.aeromorphAPI.readVideoReport(reportPath);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to read video report:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return { success: false, error: 'Report reading requires the Aeromorph Desktop application.' };
+}
+
+/**
+ * Subscribe to video extraction progress events
+ * @param {Function} callback - (progressData) => void
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeVideoProgress(callback) {
+  if (isElectron && window.aeromorphAPI?.onVideoProgress) {
+    return window.aeromorphAPI.onVideoProgress(callback);
+  }
+  return () => {};
+}
+
+/**
+ * Subscribe to video extraction log streaming events
+ * @param {Function} callback - (logEntry) => void
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeVideoLog(callback) {
+  if (isElectron && window.aeromorphAPI?.onVideoLog) {
+    return window.aeromorphAPI.onVideoLog(callback);
+  }
+  return () => {};
+}
+

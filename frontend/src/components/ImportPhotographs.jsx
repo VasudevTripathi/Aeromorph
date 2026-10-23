@@ -20,7 +20,11 @@ import {
   Check,
   AlertTriangle,
   Sparkles,
-  Play
+  Play,
+  Film,
+  Sliders,
+  Clock,
+  Square
 } from 'lucide-react';
 import {
   isElectron,
@@ -37,6 +41,13 @@ import {
   getCvAnalysisStatus,
   subscribeCvProgress,
   subscribeCvLog,
+  selectVideoFile,
+  validateVideoFile,
+  startVideoExtraction,
+  cancelVideoExtraction,
+  getVideoExtractionStatus,
+  subscribeVideoProgress,
+  subscribeVideoLog,
 } from '../services/desktopBridge';
 import { getCustomToolPaths, saveCustomToolPaths } from '../services/projectService';
 
@@ -86,6 +97,28 @@ export default function ImportPhotographs({
     error: null,
   });
   const [showFindingsDetails, setShowFindingsDetails] = useState(false);
+
+  // Sprint 8: Input Choice & Video Extraction State
+  const [importMode, setImportMode] = useState('folder'); // 'folder' | 'video'
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoSamplingInterval, setVideoSamplingInterval] = useState(1.0);
+  const [videoMaxFrames, setVideoMaxFrames] = useState('');
+  const [videoMinDimension, setVideoMinDimension] = useState(100);
+  const [videoBlurThreshold, setVideoBlurThreshold] = useState(50.0);
+  const [videoEnableBlurFilter, setVideoEnableBlurFilter] = useState(true);
+  const [videoEnableDuplicateFilter, setVideoEnableDuplicateFilter] = useState(true);
+  const [videoJob, setVideoJob] = useState({
+    running: false,
+    jobId: null,
+    progress: { sampled: 0, percent: 0, extracted: 0, timeSec: 0, detail: '' },
+    report: null,
+    error: null,
+    outputDir: null,
+    elapsedMs: 0,
+  });
+  const [videoLogs, setVideoLogs] = useState([]);
+  const [videoBindingSuccess, setVideoBindingSuccess] = useState(false);
+  const [showVideoDetails, setShowVideoDetails] = useState(false);
 
   const folderInputRef = useRef(null);
   const filesInputRef = useRef(null);
@@ -188,6 +221,36 @@ export default function ImportPhotographs({
       }));
     });
     return () => unsubscribe();
+  }, []);
+
+  // Subscribe to live Video extraction progress and logs (Sprint 8)
+  useEffect(() => {
+    const unsubProgress = subscribeVideoProgress((progressData) => {
+      if (!progressData) return;
+      setVideoJob((prev) => ({
+        ...prev,
+        running: progressData.status === 'running',
+        jobId: progressData.jobId || prev.jobId,
+        progress: progressData.progress || prev.progress,
+        report: progressData.report || prev.report,
+        outputDir: progressData.outputDir || prev.outputDir,
+        elapsedMs: progressData.elapsedMs || prev.elapsedMs,
+        error: progressData.status === 'failed' ? progressData.error : (progressData.status === 'cancelled' ? 'Extraction cancelled by user.' : null),
+      }));
+    });
+
+    const unsubLog = subscribeVideoLog((entry) => {
+      if (!entry) return;
+      setVideoLogs((prev) => {
+        const next = [...prev, entry];
+        return next.length > 200 ? next.slice(-200) : next;
+      });
+    });
+
+    return () => {
+      unsubProgress();
+      unsubLog();
+    };
   }, []);
 
   // Validate active project source directory on project change or directory update
@@ -294,6 +357,108 @@ export default function ImportPhotographs({
       setCvJob((prev) => ({ ...prev, running: false }));
     } catch (err) {
       console.warn('Failed to cancel CV analysis:', err);
+    }
+  };
+
+  // ----------------------------------------------------------------------------
+  // Sprint 8: Video Extraction Handlers
+  // ----------------------------------------------------------------------------
+
+  // Handle native video file selection
+  const handleSelectVideoFile = async () => {
+    const result = await selectVideoFile();
+    if (result.canceled) return;
+    if (result.error) {
+      alert(`Video selection error: ${result.error}`);
+      return;
+    }
+    setVideoFile(result);
+    setVideoBindingSuccess(false);
+  };
+
+  // Handle start video extraction
+  const handleStartVideoExtraction = async () => {
+    if (!videoFile || !videoFile.path) {
+      alert('Please select an input video file first.');
+      return;
+    }
+
+    const savedPaths = getCustomToolPaths();
+    const maxFr = videoMaxFrames && !isNaN(parseInt(videoMaxFrames, 10)) ? parseInt(videoMaxFrames, 10) : null;
+    const interval = parseFloat(videoSamplingInterval) || 1.0;
+
+    setVideoLogs([]);
+    setVideoBindingSuccess(false);
+    setVideoJob({
+      running: true,
+      jobId: null,
+      progress: { sampled: 0, percent: 0, extracted: 0, timeSec: 0, detail: 'Starting video extraction worker...' },
+      report: null,
+      error: null,
+      outputDir: null,
+      elapsedMs: 0,
+    });
+
+    try {
+      const res = await startVideoExtraction({
+        videoPath: videoFile.path,
+        outputDir: currentProject?.outputDirectoryReference?.path
+          ? `${currentProject.outputDirectoryReference.path}\\video_frames_${Date.now()}`
+          : null,
+        samplingInterval: interval,
+        maxFrames: maxFr,
+        minDimension: parseInt(videoMinDimension, 10) || 100,
+        blurThreshold: parseFloat(videoBlurThreshold) || 50.0,
+        enableBlurFilter: videoEnableBlurFilter,
+        enableDuplicateFilter: videoEnableDuplicateFilter,
+        customPythonPath: savedPaths.pythonPath,
+      });
+
+      if (!res.success) {
+        setVideoJob((prev) => ({ ...prev, running: false, error: res.error }));
+      } else {
+        setVideoJob((prev) => ({ ...prev, jobId: res.jobId, outputDir: res.outputDir }));
+      }
+    } catch (err) {
+      setVideoJob((prev) => ({ ...prev, running: false, error: err.message }));
+    }
+  };
+
+  // Handle cancel video extraction
+  const handleCancelVideoExtraction = async () => {
+    try {
+      await cancelVideoExtraction();
+      setVideoJob((prev) => ({ ...prev, running: false }));
+    } catch (err) {
+      console.warn('Failed to cancel video extraction:', err);
+    }
+  };
+
+  // Handle "Use Extracted Frames for Reconstruction"
+  const handleUseExtractedFrames = async () => {
+    if (!currentProject) {
+      alert('Please create or select an active project first.');
+      return;
+    }
+    const framesDir = videoJob.report?.job_config?.output_dir || videoJob.outputDir;
+    if (!framesDir) {
+      alert('No extracted frames directory found.');
+      return;
+    }
+
+    try {
+      const validation = await validateImageDirectory(framesDir);
+      if (!validation.accessible || !validation.valid || validation.fileCount === 0) {
+        alert(`Cannot bind directory: ${validation.error || 'No valid extracted images found.'}`);
+        return;
+      }
+
+      if (onUpdateProjectNativeDirectory) {
+        onUpdateProjectNativeDirectory(currentProject.id, validation);
+        setVideoBindingSuccess(true);
+      }
+    } catch (err) {
+      alert(`Failed to bind extracted frames: ${err.message}`);
     }
   };
 
@@ -812,76 +977,610 @@ export default function ImportPhotographs({
         </div>
       </div>
 
-      {/* Drag & Drop Visual Zone */}
-      <div
-        className={`import-dropzone ${dragActive ? 'active' : ''}`}
-        onDragEnter={handleDrag}
-        onDragOver={handleDrag}
-        onDragLeave={handleDrag}
-        onDrop={handleDrop}
-      >
-        <div className="dropzone-icon-box">
-          <UploadCloud size={26} strokeWidth={1.8} />
-        </div>
-        <div>
-          <div className="dropzone-title">
-            {currentProject
-              ? `Select or drop image files for "${currentProject.name}"`
-              : 'Select or drop drone photograph folders or files here'}
-          </div>
-          <div className="dropzone-subtitle" style={{ marginTop: '3px' }}>
-            Supports JPG, JPEG, PNG, and WebP image formats with EXIF camera calibration metadata
-          </div>
-        </div>
+      {/* Sprint 8: Input Mode Selector */}
+      <div style={{ display: 'flex', gap: '8px', background: 'var(--bg-secondary)', padding: '5px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', marginBottom: '14px', width: 'fit-content' }}>
+        <button
+          type="button"
+          onClick={() => setImportMode('folder')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '7px',
+            fontSize: '12px',
+            padding: '7px 16px',
+            background: importMode === 'folder' ? 'rgba(213, 255, 101, 0.15)' : 'transparent',
+            color: importMode === 'folder' ? 'var(--accent)' : 'var(--text-secondary)',
+            fontWeight: importMode === 'folder' ? 600 : 400,
+            borderRadius: '4px',
+            border: importMode === 'folder' ? '1px solid rgba(213, 255, 101, 0.35)' : '1px solid transparent',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          <FolderOpen size={14} />
+          <span>Import Photo Folder</span>
+        </button>
 
-        <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
-          {isElectron ? (
-            <>
+        <button
+          type="button"
+          onClick={() => setImportMode('video')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '7px',
+            fontSize: '12px',
+            padding: '7px 16px',
+            background: importMode === 'video' ? 'rgba(213, 255, 101, 0.15)' : 'transparent',
+            color: importMode === 'video' ? 'var(--accent)' : 'var(--text-secondary)',
+            fontWeight: importMode === 'video' ? 600 : 400,
+            borderRadius: '4px',
+            border: importMode === 'video' ? '1px solid rgba(213, 255, 101, 0.35)' : '1px solid transparent',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          <Film size={14} />
+          <span>Import Video</span>
+          <span style={{ fontSize: '10px', background: 'rgba(213, 255, 101, 0.2)', color: 'var(--accent)', padding: '1px 5px', borderRadius: '3px', fontWeight: 600 }}>
+            Sprint 8
+          </span>
+        </button>
+      </div>
+
+      {/* Video Import View (Sprint 8) */}
+      {importMode === 'video' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '16px' }}>
+          {/* Video File Picker / Card */}
+          <div
+            className="glass-panel"
+            style={{
+              padding: '20px',
+              border: videoFile ? '1px solid rgba(213, 255, 101, 0.3)' : '1.5px dashed var(--border-strong)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="dropzone-icon-box" style={{ width: '42px', height: '42px' }}>
+                  <Film size={22} color="var(--accent)" />
+                </div>
+                <div>
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {videoFile ? videoFile.name : 'Select Drone / Survey Video File'}
+                  </div>
+                  <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                    {videoFile ? (
+                      <span>
+                        Size: {formatFileSize(videoFile.sizeBytes)} • Format: {videoFile.extension?.toUpperCase()} • Path: <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{videoFile.path}</code>
+                      </span>
+                    ) : (
+                      'Supports MP4, MOV, AVI, MKV, and WEBM video formats (local sequential frame extraction)'
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {isElectron && (
+                <button
+                  type="button"
+                  className={videoFile ? 'btn-secondary' : 'btn-primary'}
+                  onClick={handleSelectVideoFile}
+                  style={{ fontSize: '12px', padding: '6px 14px', gap: '6px' }}
+                >
+                  <FileSearch size={14} />
+                  <span>{videoFile ? 'Change Video File...' : 'Choose Video File (Native)...'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Configurable Parameters Panel */}
+          <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Sliders size={15} color="var(--accent)" />
+              <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                Frame Extraction & Quality Parameters
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+              {/* Sampling Interval */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11.5px', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                  Sampling Interval (seconds)
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    max="60"
+                    disabled={videoJob.running}
+                    value={videoSamplingInterval}
+                    onChange={(e) => setVideoSamplingInterval(parseFloat(e.target.value) || 1.0)}
+                    style={{
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-xs)',
+                      padding: '6px 10px',
+                      color: 'var(--text-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '12px',
+                      width: '100px',
+                    }}
+                  />
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Default: 1.0s</span>
+                </div>
+                <span style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                  Extract candidate frame every N seconds of video playback.
+                </span>
+              </div>
+
+              {/* Max Frame Count Limit */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11.5px', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                  Maximum Frame Limit (optional)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10000"
+                  disabled={videoJob.running}
+                  placeholder="Unlimited"
+                  value={videoMaxFrames}
+                  onChange={(e) => setVideoMaxFrames(e.target.value)}
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-xs)',
+                    padding: '6px 10px',
+                    color: 'var(--text-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '12px',
+                    width: '140px',
+                  }}
+                />
+                <span style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                  Caps extracted frame count to conserve disk space and reconstruction time.
+                </span>
+              </div>
+
+              {/* Blur Threshold */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '11.5px', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                  Blur Score Threshold
+                </label>
+                <input
+                  type="number"
+                  step="5"
+                  min="0"
+                  max="500"
+                  disabled={videoJob.running || !videoEnableBlurFilter}
+                  value={videoBlurThreshold}
+                  onChange={(e) => setVideoBlurThreshold(parseFloat(e.target.value) || 50.0)}
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-xs)',
+                    padding: '6px 10px',
+                    color: 'var(--text-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '12px',
+                    width: '100px',
+                  }}
+                />
+                <span style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                  Laplacian variance threshold (default 50.0). Frames below this are rejected.
+                </span>
+              </div>
+            </div>
+
+            {/* Quality Filtering Toggles */}
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', paddingTop: '8px', borderTop: '1px solid var(--border-subtle)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  disabled={videoJob.running}
+                  checked={videoEnableBlurFilter}
+                  onChange={(e) => setVideoEnableBlurFilter(e.target.checked)}
+                />
+                <span>Enable Laplacian Blur Filtering (reject blurry candidate frames)</span>
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  disabled={videoJob.running}
+                  checked={videoEnableDuplicateFilter}
+                  onChange={(e) => setVideoEnableDuplicateFilter(e.target.checked)}
+                />
+                <span>Enable Near-Duplicate Filtering (dHash Hamming distance ≤ 8)</span>
+              </label>
+            </div>
+
+            {/* Action Buttons Row */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '10px', borderTop: '1px solid var(--border-subtle)', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                {!videoJob.running ? (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={!videoFile}
+                    onClick={handleStartVideoExtraction}
+                    style={{ fontSize: '12px', padding: '7px 16px', gap: '6px' }}
+                  >
+                    <Play size={13} fill="currentColor" />
+                    <span>Extract Suitable Frames</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={handleCancelVideoExtraction}
+                    style={{ fontSize: '12px', padding: '7px 16px', gap: '6px', color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
+                  >
+                    <Square size={13} fill="currentColor" />
+                    <span>Cancel Extraction</span>
+                  </button>
+                )}
+
+                {videoJob.running && (
+                  <span style={{ fontSize: '11.5px', color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <RefreshCw size={12} className="animate-spin" />
+                    <span>Processing video sequentially...</span>
+                  </span>
+                )}
+              </div>
+
+              {videoJob.elapsedMs > 0 && (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                  Elapsed: {(videoJob.elapsedMs / 1000).toFixed(1)}s
+                </div>
+              )}
+            </div>
+
+            {/* Error Display */}
+            {videoJob.error && (
+              <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '10px 14px', borderRadius: '4px', fontSize: '12px', color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <AlertCircle size={15} />
+                <span>{videoJob.error}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Live Progress Bar & Status */}
+          {(videoJob.running || videoJob.progress.sampled > 0) && (
+            <div className="glass-panel" style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Extraction Progress: {Math.round(videoJob.progress.percent)}%
+                </span>
+                <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>
+                  {videoJob.progress.sampled} Sampled • {videoJob.progress.extracted} Extracted
+                </span>
+              </div>
+
+              <div style={{ width: '100%', height: '7px', background: 'var(--bg-secondary)', borderRadius: '4px', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${Math.min(Math.max(videoJob.progress.percent, 0), 100)}%`,
+                    height: '100%',
+                    background: 'var(--accent)',
+                    transition: 'width 0.2s ease',
+                  }}
+                />
+              </div>
+
+              {videoJob.progress.detail && (
+                <div style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {videoJob.progress.detail}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Bounded Log Stream Viewer */}
+          {videoLogs.length > 0 && (
+            <div className="glass-panel" style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Video Extractor Live Logs ({videoLogs.length} events)
+                </span>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => setVideoLogs([])}
+                  style={{ fontSize: '10.5px', padding: '2px 6px' }}
+                >
+                  Clear Logs
+                </button>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(0,0,0,0.45)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-xs)',
+                  padding: '8px 12px',
+                  height: '130px',
+                  overflowY: 'auto',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '11px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '2px',
+                }}
+              >
+                {videoLogs.map((log, i) => (
+                  <div key={i} style={{ color: log.category === 'stderr' ? 'var(--color-danger)' : (log.msg.includes('[PROGRESS]') ? 'var(--accent)' : 'var(--text-secondary)') }}>
+                    <span style={{ color: 'var(--text-muted)', marginRight: '6px' }}>[{log.time}]</span>
+                    {log.msg}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Binding Success Banner */}
+          {videoBindingSuccess && (
+            <div style={{ background: 'rgba(213, 255, 101, 0.12)', border: '1px solid rgba(213, 255, 101, 0.4)', padding: '12px 16px', borderRadius: 'var(--radius-sm)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <CheckCircle2 size={18} color="var(--accent)" />
+                <div>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--accent)' }}>
+                    Frames Bound to Project "{currentProject?.name}"
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginTop: '2px' }}>
+                    {videoJob.report?.summary?.retained_count || 0} candidate photographs ready. You can now proceed to Studio to begin sparse reconstruction.
+                  </div>
+                </div>
+              </div>
+
               <button
                 type="button"
                 className="btn-primary"
-                onClick={handleNativeFolderSelect}
-                title="Select a directory containing photograph files using Windows folder picker"
+                onClick={onProceedToStudio}
+                style={{ fontSize: '12px', padding: '6px 14px', gap: '6px' }}
               >
-                <FolderSearch size={14} />
-                <span>Select Folder (Native)...</span>
+                <span>Proceed to Studio</span>
+                <ArrowRight size={13} />
               </button>
+            </div>
+          )}
 
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => filesInputRef.current?.click()}
-                title="Select individual image files"
-              >
-                <ImageIcon size={14} />
-                <span>Select Image Files...</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => folderInputRef.current?.click()}
-                title="Select a directory containing photograph files"
-              >
-                <FolderSearch size={14} />
-                <span>Select Folder (Session)...</span>
-              </button>
+          {/* Extraction Summary & Quality Report (Sprint 8 Report) */}
+          {videoJob.report && (
+            <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sparkles size={16} color="var(--accent)" />
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Video Extraction & Quality Report
+                  </span>
+                  <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.1)', color: 'var(--accent)', borderColor: 'rgba(213, 255, 101, 0.3)' }}>
+                    {videoJob.report.summary?.retained_count || 0} Retained Frames
+                  </span>
+                </div>
 
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => filesInputRef.current?.click()}
-                title="Select individual image files"
-              >
-                <ImageIcon size={14} />
-                <span>Select Image Files...</span>
-              </button>
-            </>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={handleUseExtractedFrames}
+                    style={{ fontSize: '12px', padding: '6px 14px', gap: '6px' }}
+                    title="Bind extracted frames to project for reconstruction"
+                  >
+                    <CheckCircle2 size={13} />
+                    <span>Use Extracted Frames for Reconstruction</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setShowVideoDetails(!showVideoDetails)}
+                    style={{ fontSize: '11px', padding: '5px 10px' }}
+                  >
+                    <span>{showVideoDetails ? 'Hide Frame Details' : 'View Frame Listing'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Statistics Metrics Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Sampled</div>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px' }}>
+                    {videoJob.report.summary?.total_frames_sampled || 0}
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(213, 255, 101, 0.3)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--accent)' }}>Retained</div>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--accent)', marginTop: '2px' }}>
+                    {videoJob.report.summary?.retained_count || 0}
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Duplicates</div>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-warning)', marginTop: '2px' }}>
+                    {videoJob.report.summary?.duplicate_count || 0}
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Blurry</div>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-warning)', marginTop: '2px' }}>
+                    {videoJob.report.summary?.rejected_blur_count || 0}
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Low Res</div>
+                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {videoJob.report.summary?.rejected_low_res_count || 0}
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Resolution</div>
+                  <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginTop: '4px' }}>
+                    {videoJob.report.video_metadata?.width}x{videoJob.report.video_metadata?.height}
+                  </div>
+                </div>
+              </div>
+
+              {/* Output Directory Notice */}
+              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <HardDrive size={13} color="var(--accent)" />
+                <span>Isolated Output Directory:</span>
+                <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{videoJob.report.job_config?.output_dir}</code>
+              </div>
+
+              {/* Warnings & Suggestions */}
+              {videoJob.report.warnings && videoJob.report.warnings.length > 0 && (
+                <div style={{ background: 'rgba(234, 179, 8, 0.08)', border: '1px solid var(--color-warning-dim)', padding: '10px 14px', borderRadius: '4px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <AlertTriangle size={13} />
+                    <span>Quality Warnings & Extraction Adjustments</span>
+                  </div>
+                  {videoJob.report.warnings.map((w, i) => (
+                    <div key={i} style={{ fontSize: '11px', color: 'var(--text-secondary)', marginLeft: '19px' }}>
+                      • {w}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Reconstruction Educational Notice / Photogrammetry Limitations */}
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', lineHeight: '1.4' }}>
+                <strong style={{ color: 'var(--text-secondary)' }}>Note on Photogrammetry Overlap:</strong> High visual overlap (60–80%) and varied camera angles are essential for COLMAP triangulation. Frame quality filtering discards blurry and stagnant frames to improve pipeline efficiency, but does not guarantee successful sparse reconstruction.
+              </div>
+
+              {/* Frame Listing Table (when toggled) */}
+              {showVideoDetails && videoJob.report.frames && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Sampled Frames Details ({videoJob.report.frames.length} total)
+                  </span>
+
+                  <div style={{ maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '4px' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>#</th>
+                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Time</th>
+                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Status</th>
+                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Filename / Reason</th>
+                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Blur Score</th>
+                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>dHash</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {videoJob.report.frames.slice(0, 100).map((fr, idx) => (
+                          <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{fr.frame_index}</td>
+                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{fr.timestamp_sec?.toFixed(2)}s</td>
+                            <td style={{ padding: '5px 10px' }}>
+                              <span style={{ color: fr.status === 'retained' ? 'var(--accent)' : 'var(--color-warning)', fontWeight: 500 }}>
+                                {fr.status === 'retained' ? '✓ Retained' : '✗ Discarded'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: fr.status === 'retained' ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                              {fr.status === 'retained' ? fr.output_filename : (fr.rejection_reason || 'Rejected')}
+                            </td>
+                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                              {fr.quality_metrics?.blur_score?.toFixed(1) || 'N/A'}
+                            </td>
+                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                              {fr.quality_metrics?.dhash_hex || 'N/A'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
-      </div>
+      )}
+
+      {/* Drag & Drop Visual Zone (Photo Folder Mode) */}
+      {importMode === 'folder' && (
+        <div
+          className={`import-dropzone ${dragActive ? 'active' : ''}`}
+          onDragEnter={handleDrag}
+          onDragOver={handleDrag}
+          onDragLeave={handleDrag}
+          onDrop={handleDrop}
+        >
+          <div className="dropzone-icon-box">
+            <UploadCloud size={26} strokeWidth={1.8} />
+          </div>
+          <div>
+            <div className="dropzone-title">
+              {currentProject
+                ? `Select or drop image files for "${currentProject.name}"`
+                : 'Select or drop drone photograph folders or files here'}
+            </div>
+            <div className="dropzone-subtitle" style={{ marginTop: '3px' }}>
+              Supports JPG, JPEG, PNG, and WebP image formats with EXIF camera calibration metadata
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+            {isElectron ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleNativeFolderSelect}
+                  title="Select a directory containing photograph files using Windows folder picker"
+                >
+                  <FolderSearch size={14} />
+                  <span>Select Folder (Native)...</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => filesInputRef.current?.click()}
+                  title="Select individual image files"
+                >
+                  <ImageIcon size={14} />
+                  <span>Select Image Files...</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => folderInputRef.current?.click()}
+                  title="Select a directory containing photograph files"
+                >
+                  <FolderSearch size={14} />
+                  <span>Select Folder (Session)...</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => filesInputRef.current?.click()}
+                  title="Select individual image files"
+                >
+                  <ImageIcon size={14} />
+                  <span>Select Image Files...</span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Validation & Selected Dataset Summary Bar */}
       <div className="validation-bar">

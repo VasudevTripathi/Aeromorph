@@ -76,7 +76,48 @@ const ALLOWED_PYTHON_NAMES = new Set([
 ]);
 
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.bmp']);
+const ALLOWED_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.webm']);
 const MAX_DIRECTORY_SCAN_ENTRIES = 5000;
+
+/**
+ * Validate candidate video file against allowed extensions and regular file requirements.
+ */
+function validateVideoFile(rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) {
+    return { valid: false, accessible: false, error: 'Video path must be a valid, non-empty string.' };
+  }
+  const resolved = path.normalize(path.resolve(rawPath.trim()));
+  const ext = path.extname(resolved).toLowerCase();
+  if (!ALLOWED_VIDEO_EXTENSIONS.has(ext)) {
+    return {
+      valid: false,
+      accessible: false,
+      error: `Unsupported video format "${ext}". Supported formats: ${Array.from(ALLOWED_VIDEO_EXTENSIONS).join(', ')}.`,
+    };
+  }
+  try {
+    const stat = fs.lstatSync(resolved);
+    if (stat.isSymbolicLink()) {
+      return { valid: false, accessible: false, error: 'Symbolic links are not supported for security reasons.' };
+    }
+    if (!stat.isFile()) {
+      return { valid: false, accessible: false, error: 'Specified path is not a regular file.' };
+    }
+    if (stat.size === 0) {
+      return { valid: false, accessible: false, error: 'Video file is empty (0 bytes).' };
+    }
+    return {
+      valid: true,
+      accessible: true,
+      path: resolved,
+      name: path.basename(resolved),
+      sizeBytes: stat.size,
+      extension: ext,
+    };
+  } catch (err) {
+    return { valid: false, accessible: false, error: `Cannot access video file: ${err.message}` };
+  }
+}
 
 /**
  * Validate candidate binary executable against an allowlist of approved filenames.
@@ -789,9 +830,8 @@ function emitReconstructionLog(entry) {
 function terminateProcessTree(child) {
   if (!child) return;
   const pid = child.pid;
-  if (!pid) return;
 
-  if (process.platform === 'win32') {
+  if (pid && process.platform === 'win32') {
     try {
       spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
         windowsHide: true,
@@ -801,7 +841,9 @@ function terminateProcessTree(child) {
   }
 
   try {
-    child.kill('SIGKILL');
+    if (typeof child.kill === 'function') {
+      child.kill('SIGKILL');
+    }
   } catch {}
 }
 
@@ -2483,6 +2525,467 @@ function readCvReport(rawReportPath) {
 }
 
 // ------------------------------------------------------------------------------
+// Sprint 8: Local Video Import & Memory-Efficient Frame Extraction
+// ------------------------------------------------------------------------------
+
+let activeVideoJob = null;
+
+function emitVideoProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('video:progress', payload);
+    } catch {}
+  }
+}
+
+function emitVideoLog(entry) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('video:log', entry);
+    } catch {}
+  }
+}
+
+/**
+ * Build fixed argument array for the Python Video Extractor worker (shell: false)
+ */
+function buildVideoWorkerArgs(config = {}) {
+  const {
+    videoPath,
+    outputDir,
+    reportPath,
+    jobId,
+    samplingInterval = 1.0,
+    maxFrames = null,
+    minDimension = 100,
+    blurThreshold = 50.0,
+    maxHamming = 8,
+    enableBlurFilter = true,
+    enableDuplicateFilter = true,
+  } = config;
+
+  if (typeof videoPath !== 'string' || !videoPath.trim() || videoPath.includes('\0')) {
+    throw new Error('Invalid video path.');
+  }
+  if (typeof outputDir !== 'string' || !outputDir.trim() || outputDir.includes('\0')) {
+    throw new Error('Invalid output directory path.');
+  }
+  if (typeof reportPath !== 'string' || !reportPath.trim() || reportPath.includes('\0')) {
+    throw new Error('Invalid report path.');
+  }
+
+  const args = [
+    '-m',
+    'aeromorph_cv.video_extractor',
+    '--video-path',
+    path.normalize(path.resolve(videoPath.trim())),
+    '--output-dir',
+    path.normalize(path.resolve(outputDir.trim())),
+    '--output-report',
+    path.normalize(path.resolve(reportPath.trim())),
+  ];
+
+  if (jobId && typeof jobId === 'string' && jobId.trim() && !jobId.includes('\0')) {
+    args.push('--job-id', jobId.trim());
+  }
+
+  const interval = typeof samplingInterval === 'number' && samplingInterval > 0 ? samplingInterval : 1.0;
+  args.push('--sampling-interval', String(interval));
+
+  if (Number.isInteger(maxFrames) && maxFrames > 0) {
+    args.push('--max-frames', String(maxFrames));
+  }
+
+  const minDim = Number.isInteger(minDimension) && minDimension >= 10 ? minDimension : 100;
+  args.push('--min-dimension', String(minDim));
+
+  const blurThresh = typeof blurThreshold === 'number' && blurThreshold >= 0 ? blurThreshold : 50.0;
+  args.push('--blur-threshold', String(blurThresh));
+
+  const maxH = Number.isInteger(maxHamming) && maxHamming >= 0 && maxHamming <= 64 ? maxHamming : 8;
+  args.push('--max-hamming', String(maxH));
+
+  if (enableBlurFilter === false) {
+    args.push('--no-blur-filter');
+  }
+  if (enableDuplicateFilter === false) {
+    args.push('--no-duplicate-filter');
+  }
+
+  return args;
+}
+
+/**
+ * Launch Python Video Frame Extraction Worker Job
+ */
+async function startVideoExtractionJob(config = {}) {
+  if (activeVideoJob && activeVideoJob.status === 'running') {
+    return {
+      success: false,
+      error: 'A video extraction job is already in progress. Wait for it to finish or cancel it first.',
+    };
+  }
+
+  const {
+    videoPath,
+    outputDir: userOutputDir,
+    reportPath: explicitReportPath,
+    customPythonPath,
+    samplingInterval = 1.0,
+    maxFrames = null,
+    minDimension = 100,
+    blurThreshold = 50.0,
+    maxHamming = 8,
+    enableBlurFilter = true,
+    enableDuplicateFilter = true,
+    spawnProcess: customSpawn,
+    pythonExe: customPythonExe,
+  } = config;
+
+  // 1. Validate video input path
+  const videoValidation = validateVideoFile(videoPath);
+  if (!videoValidation.valid) {
+    return { success: false, error: videoValidation.error };
+  }
+  const resolvedVideoPath = videoValidation.path;
+
+  const jobId = typeof config.jobId === 'string' && config.jobId.trim()
+    ? config.jobId.trim()
+    : `video_${Date.now()}`;
+
+  // 2. Resolve isolated output directory
+  let resolvedOutputDir;
+  if (userOutputDir && typeof userOutputDir === 'string' && userOutputDir.trim() && !userOutputDir.includes('\0')) {
+    resolvedOutputDir = path.normalize(path.resolve(userOutputDir.trim()));
+    // If output dir is the exact directory containing the source video, nest into a subfolder to prevent collision
+    if (resolvedOutputDir === path.dirname(resolvedVideoPath)) {
+      resolvedOutputDir = path.join(resolvedOutputDir, `extracted_frames_${jobId}`);
+    }
+  } else {
+    resolvedOutputDir = path.join(os.tmpdir(), `aeromorph_video_frames_${jobId}`);
+  }
+
+  try {
+    fs.mkdirSync(resolvedOutputDir, { recursive: true });
+  } catch (err) {
+    return { success: false, error: `Cannot create output directory: ${err.message}` };
+  }
+
+  // 3. Resolve report path
+  let resolvedReportPath;
+  if (explicitReportPath && typeof explicitReportPath === 'string' && explicitReportPath.trim() && !explicitReportPath.includes('\0')) {
+    resolvedReportPath = path.normalize(path.resolve(explicitReportPath.trim()));
+    try {
+      fs.mkdirSync(path.dirname(resolvedReportPath), { recursive: true });
+    } catch (err) {
+      return { success: false, error: `Cannot create report directory: ${err.message}` };
+    }
+  } else {
+    resolvedReportPath = path.join(resolvedOutputDir, `video_extraction_report.json`);
+  }
+
+  // 4. Resolve Python executable
+  let resolvedPythonExe = customPythonExe || null;
+  let pyVersion = null;
+
+  if (!resolvedPythonExe) {
+    if (customPythonPath && typeof customPythonPath === 'string' && customPythonPath.trim()) {
+      const validCustom = validateBinaryExecutable(customPythonPath, ALLOWED_PYTHON_NAMES);
+      if (!validCustom) {
+        return { success: false, error: `Configured Python executable "${customPythonPath}" was not found or is invalid.` };
+      }
+    }
+
+    const pyDetection = await detectPythonTool(customPythonPath);
+    if (!pyDetection.detected || !pyDetection.path) {
+      return {
+        success: false,
+        error: pyDetection.error || 'Python 3 interpreter was not detected. Please install Python 3.8+ or configure path.',
+      };
+    }
+    resolvedPythonExe = pyDetection.path;
+    pyVersion = pyDetection.version;
+  }
+
+  const pythonRoot = path.join(__dirname, '..', 'python');
+  let args;
+  try {
+    args = buildVideoWorkerArgs({
+      videoPath: resolvedVideoPath,
+      outputDir: resolvedOutputDir,
+      reportPath: resolvedReportPath,
+      jobId,
+      samplingInterval,
+      maxFrames,
+      minDimension,
+      blurThreshold,
+      maxHamming,
+      enableBlurFilter,
+      enableDuplicateFilter,
+    });
+  } catch (argErr) {
+    return { success: false, error: argErr.message };
+  }
+
+  const spawnFn = typeof customSpawn === 'function' ? customSpawn : spawn;
+
+  activeVideoJob = {
+    id: jobId,
+    status: 'running',
+    settled: false,
+    startTime: Date.now(),
+    endTime: null,
+    videoPath: resolvedVideoPath,
+    outputDir: resolvedOutputDir,
+    reportPath: resolvedReportPath,
+    pythonExe: resolvedPythonExe,
+    currentProcess: null,
+    progress: { sampled: 0, percent: 0, extracted: 0, timeSec: 0, detail: '' },
+    logs: [],
+    report: null,
+    error: null,
+  };
+
+  const logBuffer = activeVideoJob.logs;
+
+  const appendVideoLog = (category, msg) => {
+    const timeStr = new Date().toLocaleTimeString();
+    const entry = { time: timeStr, category, msg: msg.trim() };
+    logBuffer.push(entry);
+    if (logBuffer.length > 300) logBuffer.shift();
+    emitVideoLog(entry);
+  };
+
+  appendVideoLog('setup', `Starting Video Frame Extraction: ${path.basename(resolvedVideoPath)}`);
+  appendVideoLog('setup', `Sampling interval: ${samplingInterval}s${maxFrames ? `, max frames: ${maxFrames}` : ''}`);
+  appendVideoLog('setup', `Python: ${resolvedPythonExe} (version: ${pyVersion || 'detected'})`);
+  appendVideoLog('setup', `Frames Destination: ${resolvedOutputDir}`);
+
+  emitVideoProgress({
+    jobId,
+    status: 'running',
+    settled: false,
+    progress: activeVideoJob.progress,
+    elapsedMs: 0,
+    outputDir: resolvedOutputDir,
+    reportPath: resolvedReportPath,
+  });
+
+  let proc;
+  try {
+    proc = spawnFn(resolvedPythonExe, args, {
+      cwd: pythonRoot,
+      env: {
+        ...process.env,
+        PYTHONPATH: pythonRoot + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : ''),
+        PYTHONIOENCODING: 'utf-8',
+      },
+      shell: false,
+      windowsHide: true,
+    });
+  } catch (spawnErr) {
+    activeVideoJob.status = 'failed';
+    activeVideoJob.settled = true;
+    activeVideoJob.error = `Failed to spawn Python video extractor: ${spawnErr.message}`;
+    return { success: false, error: activeVideoJob.error };
+  }
+
+  activeVideoJob.currentProcess = proc;
+
+  proc.stdout?.on('data', (chunk) => {
+    const lines = chunk.toString().split(/\r?\n/);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const progressMatch = line.match(/^\[PROGRESS\]\s+(\d+)\s+sampled\s+\(([\d.]+)%\)\s+extracted=(\d+)\s+time=([\d.]+)s(?:\s+(.*))?$/);
+      if (progressMatch) {
+        const sampled = parseInt(progressMatch[1], 10);
+        const percent = parseFloat(progressMatch[2]);
+        const extracted = parseInt(progressMatch[3], 10);
+        const timeSec = parseFloat(progressMatch[4]);
+        const detail = progressMatch[5] ? progressMatch[5].trim() : '';
+
+        if (activeVideoJob) {
+          activeVideoJob.progress = { sampled, percent, extracted, timeSec, detail };
+          emitVideoProgress({
+            jobId,
+            status: activeVideoJob.status,
+            settled: false,
+            progress: activeVideoJob.progress,
+            elapsedMs: Date.now() - activeVideoJob.startTime,
+            outputDir: resolvedOutputDir,
+          });
+        }
+      }
+      appendVideoLog('extractor', line);
+    }
+  });
+
+  proc.stderr?.on('data', (chunk) => {
+    const lines = chunk.toString().split(/\r?\n/);
+    for (const line of lines) {
+      if (line.trim()) {
+        appendVideoLog('stderr', line);
+      }
+    }
+  });
+
+  proc.on('error', (err) => {
+    if (activeVideoJob) {
+      activeVideoJob.currentProcess = null;
+      activeVideoJob.status = 'failed';
+      activeVideoJob.settled = true;
+      activeVideoJob.endTime = Date.now();
+      activeVideoJob.error = `Process error: ${err.message}`;
+      appendVideoLog('error', activeVideoJob.error);
+      emitVideoProgress({
+        jobId,
+        status: 'failed',
+        settled: true,
+        error: activeVideoJob.error,
+        elapsedMs: activeVideoJob.endTime - activeVideoJob.startTime,
+      });
+    }
+  });
+
+  proc.on('close', (code, signal) => {
+    if (!activeVideoJob) return;
+    activeVideoJob.currentProcess = null;
+    activeVideoJob.endTime = Date.now();
+    activeVideoJob.settled = true;
+
+    if (activeVideoJob.status === 'cancelled') {
+      appendVideoLog('system', 'Video extraction was cancelled by user.');
+      emitVideoProgress({
+        jobId,
+        status: 'cancelled',
+        settled: true,
+        error: 'Video extraction cancelled by user.',
+        elapsedMs: activeVideoJob.endTime - activeVideoJob.startTime,
+      });
+      return;
+    }
+
+    if (code === 0) {
+      try {
+        const rawReport = fs.readFileSync(resolvedReportPath, 'utf8');
+        const parsedReport = JSON.parse(rawReport);
+        activeVideoJob.status = 'completed';
+        activeVideoJob.report = parsedReport;
+        appendVideoLog('system', `✓ Video extraction completed. Extracted ${parsedReport.summary?.retained_count || 0} frames.`);
+        emitVideoProgress({
+          jobId,
+          status: 'completed',
+          settled: true,
+          report: parsedReport,
+          progress: activeVideoJob.progress,
+          elapsedMs: activeVideoJob.endTime - activeVideoJob.startTime,
+          outputDir: resolvedOutputDir,
+          reportPath: resolvedReportPath,
+        });
+      } catch (readErr) {
+        activeVideoJob.status = 'failed';
+        activeVideoJob.error = `Extraction completed but failed to read report: ${readErr.message}`;
+        appendVideoLog('error', activeVideoJob.error);
+        emitVideoProgress({
+          jobId,
+          status: 'failed',
+          settled: true,
+          error: activeVideoJob.error,
+          elapsedMs: activeVideoJob.endTime - activeVideoJob.startTime,
+        });
+      }
+    } else {
+      activeVideoJob.status = 'failed';
+      activeVideoJob.error = `Video extractor exited with code ${code}${signal ? ` (${signal})` : ''}`;
+      appendVideoLog('error', activeVideoJob.error);
+      emitVideoProgress({
+        jobId,
+        status: 'failed',
+        settled: true,
+        error: activeVideoJob.error,
+        elapsedMs: activeVideoJob.endTime - activeVideoJob.startTime,
+      });
+    }
+  });
+
+  return {
+    success: true,
+    jobId,
+    videoPath: resolvedVideoPath,
+    outputDir: resolvedOutputDir,
+    reportPath: resolvedReportPath,
+  };
+}
+
+/**
+ * Cancel active video extraction worker
+ */
+async function cancelVideoExtractionJob() {
+  if (!activeVideoJob || activeVideoJob.status !== 'running') {
+    return { canceled: false, message: 'No active video extraction job to cancel.' };
+  }
+
+  activeVideoJob.status = 'cancelled';
+  activeVideoJob.endTime = Date.now();
+  if (activeVideoJob.currentProcess) {
+    terminateProcessTree(activeVideoJob.currentProcess);
+  }
+
+  return { canceled: true };
+}
+
+/**
+ * Query active video extraction status snapshot
+ */
+function getVideoExtractionStatusJob() {
+  if (!activeVideoJob) {
+    return { status: 'idle', settled: true, progress: null, report: null, logs: [] };
+  }
+
+  return {
+    id: activeVideoJob.id,
+    status: activeVideoJob.status,
+    settled: Boolean(activeVideoJob.settled),
+    startTime: activeVideoJob.startTime,
+    endTime: activeVideoJob.endTime,
+    elapsedMs: activeVideoJob.endTime
+      ? activeVideoJob.endTime - activeVideoJob.startTime
+      : Date.now() - activeVideoJob.startTime,
+    videoPath: activeVideoJob.videoPath,
+    outputDir: activeVideoJob.outputDir,
+    reportPath: activeVideoJob.reportPath,
+    progress: activeVideoJob.progress,
+    report: activeVideoJob.report,
+    error: activeVideoJob.error,
+    logs: activeVideoJob.logs.slice(-150),
+  };
+}
+
+/**
+ * Read structured Video Extraction report from file
+ */
+function readVideoReport(rawReportPath) {
+  if (typeof rawReportPath !== 'string' || !rawReportPath.trim() || rawReportPath.includes('\0')) {
+    return { success: false, error: 'Invalid report path argument.' };
+  }
+  const resolved = path.normalize(path.resolve(rawReportPath.trim()));
+  try {
+    const stat = fs.lstatSync(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return { success: false, error: 'Report path does not point to a regular file.' };
+    }
+    if (stat.size > 20 * 1024 * 1024) {
+      return { success: false, error: 'Report file exceeds maximum allowed size (20 MB).' };
+    }
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const parsed = JSON.parse(raw);
+    return { success: true, report: parsed, path: resolved };
+  } catch (err) {
+    return { success: false, error: `Failed to read video extraction report: ${err.message}` };
+  }
+}
+
+// ------------------------------------------------------------------------------
 // Secure IPC Handlers
 // ------------------------------------------------------------------------------
 
@@ -2946,6 +3449,101 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
   ipcMain.handle('cv:readReport', async (event, reportPath) => {
     return readCvReport(reportPath);
   });
+
+  /**
+   * 19. Sprint 8: Select Video File Dialog
+   */
+  ipcMain.handle('dialog:selectVideoFile', async () => {
+    if (!mainWindow) return { canceled: true };
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Select Input Video File for Frame Extraction',
+        properties: ['openFile', 'dontAddToRecent'],
+        filters: [
+          { name: 'Video Files (*.mp4, *.mov, *.avi, *.mkv, *.webm)', extensions: ['mp4', 'mov', 'avi', 'mkv', 'webm'] },
+          { name: 'All Files (*.*)', extensions: ['*'] },
+        ],
+      });
+
+      if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+        return { canceled: true };
+      }
+
+      const selected = result.filePaths[0];
+      const validation = validateVideoFile(selected);
+      if (!validation.valid) {
+        return {
+          canceled: true,
+          error: validation.error,
+        };
+      }
+
+      return {
+        canceled: false,
+        ...validation,
+      };
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting video file:', err);
+      return { canceled: true, error: err.message };
+    }
+  });
+
+  /**
+   * 20. Sprint 8: Validate Video File
+   */
+  ipcMain.handle('system:validateVideoFile', async (event, videoPath) => {
+    return validateVideoFile(videoPath);
+  });
+
+  /**
+   * 21. Sprint 8: Start Video Frame Extraction Job
+   */
+  ipcMain.handle('video:startExtraction', async (event, config = {}) => {
+    if (activeVideoJob && activeVideoJob.status === 'running') {
+      return {
+        success: false,
+        error: 'A video frame extraction job is already in progress. Wait for it to finish or cancel it first.',
+      };
+    }
+
+    const sanitized = {
+      videoPath: typeof config?.videoPath === 'string' ? config.videoPath.trim() : '',
+      outputDir: typeof config?.outputDir === 'string' ? config.outputDir.trim() : null,
+      reportPath: typeof config?.reportPath === 'string' ? config.reportPath.trim() : null,
+      customPythonPath: typeof config?.customPythonPath === 'string' ? config.customPythonPath.trim() : null,
+      jobId: typeof config?.jobId === 'string' ? config.jobId.trim() : null,
+      samplingInterval: typeof config?.samplingInterval === 'number' ? config.samplingInterval : 1.0,
+      maxFrames: Number.isInteger(config?.maxFrames) ? config.maxFrames : null,
+      minDimension: Number.isInteger(config?.minDimension) ? config.minDimension : 100,
+      blurThreshold: typeof config?.blurThreshold === 'number' ? config.blurThreshold : 50.0,
+      maxHamming: typeof config?.maxHamming === 'number' ? config.maxHamming : 8,
+      enableBlurFilter: config?.enableBlurFilter !== false,
+      enableDuplicateFilter: config?.enableDuplicateFilter !== false,
+    };
+
+    return await startVideoExtractionJob(sanitized);
+  });
+
+  /**
+   * 22. Sprint 8: Cancel Active Video Extraction Job
+   */
+  ipcMain.handle('video:cancelExtraction', async () => {
+    return await cancelVideoExtractionJob();
+  });
+
+  /**
+   * 23. Sprint 8: Get Video Extraction Job Status
+   */
+  ipcMain.handle('video:getStatus', async () => {
+    return getVideoExtractionStatusJob();
+  });
+
+  /**
+   * 24. Sprint 8: Read Video Extraction Report
+   */
+  ipcMain.handle('video:readReport', async (event, reportPath) => {
+    return readVideoReport(reportPath);
+  });
 }
 
 // ------------------------------------------------------------------------------
@@ -3017,5 +3615,15 @@ module.exports = {
   readCvReport,
   _resetActiveCvJobForTest: () => {
     activeCvJob = null;
+  },
+  ALLOWED_VIDEO_EXTENSIONS,
+  validateVideoFile,
+  buildVideoWorkerArgs,
+  startVideoExtractionJob,
+  cancelVideoExtractionJob,
+  getVideoExtractionStatusJob,
+  readVideoReport,
+  _resetActiveVideoJobForTest: () => {
+    activeVideoJob = null;
   },
 };
