@@ -98,6 +98,37 @@ function createMockProcess(behavior = {}) {
   return proc;
 }
 
+// Helper to create a synthetic valid COLMAP sparse model directory
+function createSyntheticValidModel(modelDir, targetPointsSize = 500) {
+  fs.mkdirSync(modelDir, { recursive: true });
+  const numPoints = 2;
+  const recordSize = 51;
+  const allocBytes = Math.max(8 + numPoints * recordSize, targetPointsSize);
+  const pointsBuf = Buffer.alloc(allocBytes, 0);
+  pointsBuf.writeBigUInt64LE(BigInt(numPoints), 0);
+  for (let i = 0; i < numPoints; i++) {
+    const offset = 8 + i * recordSize;
+    pointsBuf.writeBigUInt64LE(BigInt(i + 1), offset);
+    pointsBuf.writeDoubleLE(i * 1.5, offset + 8);
+    pointsBuf.writeDoubleLE(i * -0.5, offset + 16);
+    pointsBuf.writeDoubleLE(5.0 + i, offset + 24);
+    pointsBuf.writeUInt8(200, offset + 32);
+    pointsBuf.writeUInt8(220, offset + 33);
+    pointsBuf.writeUInt8(240, offset + 34);
+    pointsBuf.writeDoubleLE(0.1, offset + 35);
+    pointsBuf.writeBigUInt64LE(0n, offset + 43);
+  }
+  fs.writeFileSync(path.join(modelDir, 'points3D.bin'), pointsBuf);
+
+  const camBuf = Buffer.alloc(64, 0);
+  camBuf.writeBigUInt64LE(1n, 0);
+  fs.writeFileSync(path.join(modelDir, 'cameras.bin'), camBuf);
+
+  const imgBuf = Buffer.alloc(128, 0);
+  imgBuf.writeBigUInt64LE(2n, 0);
+  fs.writeFileSync(path.join(modelDir, 'images.bin'), imgBuf);
+}
+
 describe('Sprint 6B.1: Workspace Isolation and Cleanup Safety', () => {
   let rootTempDir = null;
   let imageDir = null;
@@ -238,11 +269,7 @@ describe('Sprint 6B.1: Workspace Isolation and Cleanup Safety', () => {
           capturedRunDir = opts.cwd;
           // In mapper stage, synthesize COLMAP sparse model output
           if (stage === 'mapper') {
-            const modelDir = path.join(opts.cwd, 'sparse', '0');
-            fs.mkdirSync(modelDir, { recursive: true });
-            fs.writeFileSync(path.join(modelDir, 'points3D.bin'), Buffer.alloc(1024, 0x01));
-            fs.writeFileSync(path.join(modelDir, 'cameras.bin'), Buffer.alloc(64, 0x02));
-            fs.writeFileSync(path.join(modelDir, 'images.bin'), Buffer.alloc(128, 0x03));
+            createSyntheticValidModel(path.join(opts.cwd, 'sparse', '0'), 1024);
           }
           // In model_converter stage, synthesize sparse.ply
           if (stage === 'model_converter') {
@@ -447,14 +474,13 @@ describe('Sprint 6B.1: Workspace Isolation and Cleanup Safety', () => {
       return createMockProcess({
         onSpawn: () => {
           if (args[0] === 'mapper') {
-            const modelDir = path.join(opts.cwd, 'sparse', '0');
-            fs.mkdirSync(modelDir, { recursive: true });
-            fs.writeFileSync(path.join(modelDir, 'points3D.bin'), Buffer.alloc(100, 0x01));
-            fs.writeFileSync(path.join(modelDir, 'cameras.bin'), Buffer.alloc(64, 0x02));
-            fs.writeFileSync(path.join(modelDir, 'images.bin'), Buffer.alloc(128, 0x03));
+            createSyntheticValidModel(path.join(opts.cwd, 'sparse', '0'), 500);
           }
           if (args[0] === 'model_converter') {
-            fs.writeFileSync(path.join(opts.cwd, 'sparse.ply'), `ply\n# Tag: ${runTag}\nend_header\n`);
+            fs.writeFileSync(
+              path.join(opts.cwd, 'sparse.ply'),
+              `ply\nformat ascii 1.0\nelement vertex 10\n# Tag: ${runTag}\nend_header\n`
+            );
           }
         },
       });
@@ -544,10 +570,7 @@ describe('Sprint 6B.1: Workspace Isolation and Cleanup Safety', () => {
     // 10c. verifySparseReconstructionOutput
     const tempSparseDir = path.join(rootTempDir, 'sparse_verify');
     const model0 = path.join(tempSparseDir, '0');
-    fs.mkdirSync(model0, { recursive: true });
-    fs.writeFileSync(path.join(model0, 'points3D.bin'), Buffer.alloc(500, 0x01));
-    fs.writeFileSync(path.join(model0, 'cameras.bin'), Buffer.alloc(64, 0x02));
-    fs.writeFileSync(path.join(model0, 'images.bin'), Buffer.alloc(128, 0x03));
+    createSyntheticValidModel(model0, 500);
 
     const verifyRes = verifySparseReconstructionOutput(tempSparseDir);
     assert.equal(verifyRes.valid, true);

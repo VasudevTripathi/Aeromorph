@@ -373,11 +373,18 @@ export default function Viewport3D({
     // 2. Update Loaded PLY Model Visibility
     const loadedSubs = loadedSubGroupsRef.current;
     if (loadedSubs.solid && loadedSubs.wireframe && loadedSubs.points) {
-      loadedSubs.solid.visible = renderMode === 'shaded';
-      loadedSubs.wireframe.visible = renderMode === 'wireframe';
-      loadedSubs.points.visible = renderMode === 'points';
+      if (loadedModel?.isMesh) {
+        loadedSubs.solid.visible = renderMode === 'shaded';
+        loadedSubs.wireframe.visible = renderMode === 'wireframe';
+        loadedSubs.points.visible = renderMode === 'points';
+      } else {
+        // Point cloud has no triangle meshes; keep points visible
+        loadedSubs.solid.visible = false;
+        loadedSubs.wireframe.visible = false;
+        loadedSubs.points.visible = true;
+      }
     }
-  }, [renderMode]);
+  }, [renderMode, loadedModel?.isMesh]);
 
   // Lighting Mode Handler (Studio vs Flat)
   useEffect(() => {
@@ -576,6 +583,26 @@ export default function Viewport3D({
   }, [currentProject?.id, sessionModelFile, currentProject?.modelFileReference?.path]);
 
   const processPlyBuffer = (buffer, fileName, fileSize, requestId) => {
+    // 1. Inspect PLY header text to determine if genuine face elements exist
+    let hasFaceElement = false;
+    let declaredFaceCount = 0;
+    try {
+      const headerChunk = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 8192));
+      let headerStr = '';
+      for (let i = 0; i < headerChunk.length; i++) {
+        headerStr += String.fromCharCode(headerChunk[i]);
+      }
+      const endHeaderPos = headerStr.indexOf('end_header');
+      if (endHeaderPos !== -1) {
+        const headerSub = headerStr.slice(0, endHeaderPos);
+        const faceMatch = headerSub.match(/element\s+face\s+(\d+)/);
+        if (faceMatch) {
+          declaredFaceCount = parseInt(faceMatch[1], 10);
+          hasFaceElement = declaredFaceCount > 0;
+        }
+      }
+    } catch {}
+
     const loader = new PLYLoader();
     let geometry;
 
@@ -606,9 +633,8 @@ export default function Viewport3D({
 
     // Validation 2: Check for finite coordinates
     const posArray = positionAttr.array;
-    const checkSamples = Math.min(posArray.length, 3000);
     let allFinite = true;
-    for (let i = 0; i < checkSamples; i++) {
+    for (let i = 0; i < posArray.length; i++) {
       if (!Number.isFinite(posArray[i])) {
         allFinite = false;
         break;
@@ -620,21 +646,29 @@ export default function Viewport3D({
       return;
     }
 
-    // Validation 3: Indexed vs Non-indexed geometry
-    const isIndexed = !!geometry.index;
+    // Validation 3: Genuine Mesh vs Sparse Point Cloud distinction
+    // NEVER invent fake faces for non-indexed point clouds!
+    const isIndexed = Boolean(geometry.index && geometry.index.count >= 3);
+    const isMesh = Boolean(hasFaceElement && isIndexed && declaredFaceCount > 0);
     const vertexCount = positionAttr.count;
-    let faceCount = 0;
-    if (isIndexed) {
-      faceCount = Math.floor(geometry.index.count / 3);
-    } else if (faceCount === 0 && vertexCount >= 3) {
-      faceCount = Math.floor(vertexCount / 3);
+    const faceCount = isMesh ? Math.floor(geometry.index.count / 3) : 0;
+
+    // Validation 4: Detect valid vertex colors (not all black / zeros)
+    let hasVertexColors = false;
+    if (geometry.attributes.color && geometry.attributes.color.count > 0) {
+      const colorArray = geometry.attributes.color.array;
+      const sampleLimit = Math.min(colorArray.length, 600);
+      let nonZeroCount = 0;
+      for (let i = 0; i < sampleLimit; i++) {
+        if (colorArray[i] > 0.05) {
+          nonZeroCount++;
+        }
+      }
+      hasVertexColors = nonZeroCount > 0;
     }
 
-    // Validation 4: Detect vertex colors (common in OpenMVS / COLMAP PLYs)
-    const hasVertexColors = !!(geometry.attributes.color && geometry.attributes.color.count > 0);
-
-    // Validation 5: Compute vertex normals if missing and geometry has faces
-    if (!geometry.attributes.normal && faceCount > 0) {
+    // Validation 5: Compute vertex normals only for real meshes
+    if (isMesh && !geometry.attributes.normal && faceCount > 0) {
       try {
         geometry.computeVertexNormals();
       } catch (normErr) {
@@ -658,40 +692,63 @@ export default function Viewport3D({
     disposeGroup(loadedSubs.wireframe);
     disposeGroup(loadedSubs.points);
 
-    // Solid Shaded Mesh
-    const solidMaterial = new THREE.MeshStandardMaterial({
-      color: hasVertexColors ? 0xffffff : 0x8a9ba8,
-      vertexColors: hasVertexColors,
-      roughness: 0.65,
-      metalness: 0.15,
-      side: THREE.DoubleSide,
-    });
-    const solidMesh = new THREE.Mesh(geometry, solidMaterial);
-    loadedSubs.solid.add(solidMesh);
+    if (isMesh) {
+      // Solid Shaded Mesh
+      const solidMaterial = new THREE.MeshStandardMaterial({
+        color: hasVertexColors ? 0xffffff : 0x8a9ba8,
+        vertexColors: hasVertexColors,
+        roughness: 0.65,
+        metalness: 0.15,
+        side: THREE.DoubleSide,
+      });
+      const solidMesh = new THREE.Mesh(geometry, solidMaterial);
+      loadedSubs.solid.add(solidMesh);
 
-    // Wireframe Mesh
-    const wireMaterial = new THREE.MeshBasicMaterial({
-      color: 0xD5FF65,
-      wireframe: true,
-      side: THREE.DoubleSide,
-    });
-    const wireMesh = new THREE.Mesh(geometry, wireMaterial);
-    loadedSubs.wireframe.add(wireMesh);
+      // Wireframe Mesh
+      const wireMaterial = new THREE.MeshBasicMaterial({
+        color: 0xD5FF65,
+        wireframe: true,
+        side: THREE.DoubleSide,
+      });
+      const wireMesh = new THREE.Mesh(geometry, wireMaterial);
+      loadedSubs.wireframe.add(wireMesh);
 
-    // Point Cloud Scan
-    const pointMaterial = new THREE.PointsMaterial({
-      size: 3.0,
-      vertexColors: hasVertexColors,
-      color: hasVertexColors ? 0xffffff : 0xD5FF65,
-      sizeAttenuation: false,
-    });
-    const pointsMesh = new THREE.Points(geometry, pointMaterial);
-    loadedSubs.points.add(pointsMesh);
+      // Point representation of mesh
+      const pointMaterial = new THREE.PointsMaterial({
+        size: 3.5,
+        vertexColors: hasVertexColors,
+        color: hasVertexColors ? 0xffffff : 0xD5FF65,
+        sizeAttenuation: false,
+      });
+      const pointsMesh = new THREE.Points(geometry, pointMaterial);
+      loadedSubs.points.add(pointsMesh);
 
-    // Set correct sub-group visibility based on active renderMode
-    loadedSubs.solid.visible = renderMode === 'shaded';
-    loadedSubs.wireframe.visible = renderMode === 'wireframe';
-    loadedSubs.points.visible = renderMode === 'points';
+      loadedSubs.solid.visible = renderMode === 'shaded';
+      loadedSubs.wireframe.visible = renderMode === 'wireframe';
+      loadedSubs.points.visible = renderMode === 'points';
+    } else {
+      // Vertex-only Sparse Point Cloud:
+      // Render vertices using Three.js Points / BufferGeometry path.
+      // Do NOT create THREE.Mesh or fabricate triangle faces!
+      const pointMaterial = new THREE.PointsMaterial({
+        size: 3.5,
+        vertexColors: hasVertexColors,
+        color: hasVertexColors ? 0xffffff : 0xD5FF65,
+        sizeAttenuation: false,
+      });
+      const pointsMesh = new THREE.Points(geometry, pointMaterial);
+      loadedSubs.points.add(pointsMesh);
+
+      // Solid and wireframe meshes are not created for point clouds
+      loadedSubs.solid.visible = false;
+      loadedSubs.wireframe.visible = false;
+      loadedSubs.points.visible = true;
+
+      // Automatically switch render mode to points
+      if (renderMode !== 'points') {
+        setRenderMode('points');
+      }
+    }
 
     // Show loaded group and hide demo pavilion
     if (demoPavilionGroupRef.current) demoPavilionGroupRef.current.visible = false;
@@ -736,6 +793,8 @@ export default function Viewport3D({
       size: fileSize,
       vertexCount,
       faceCount,
+      isMesh,
+      isPointCloud: !isMesh,
       hasVertexColors,
       isIndexed,
     });
@@ -898,9 +957,17 @@ export default function Viewport3D({
               {currentProject ? currentProject.name.toUpperCase() : (loadedModel ? 'LOCAL PLY MODEL' : 'THREE.JS VIEWPORT')}
             </span>
             <span className="hud-demo-pill">
-              {loadedModel ? (currentProject ? 'Project Mesh' : 'Custom Mesh') : 'Demo Pavilion'}
+              {loadedModel
+                ? (loadedModel.isMesh ? (currentProject ? 'Project Mesh' : 'Custom Mesh') : 'Sparse Point Cloud')
+                : 'Demo Pavilion (Sample)'}
             </span>
           </div>
+
+          {!loadedModel && (
+            <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginBottom: '4px', letterSpacing: '0.02em' }}>
+              Sample preview (no reconstruction loaded)
+            </div>
+          )}
 
           {loadedModel && (
             <div className="hud-stat-row" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)', paddingBottom: '3px' }}>
@@ -917,7 +984,7 @@ export default function Viewport3D({
           </div>
 
           <div className="hud-stat-row">
-            <span>Vertices</span>
+            <span>{loadedModel ? (loadedModel.isMesh ? 'Vertices' : '3D Points') : 'Vertices'}</span>
             <span className="hud-stat-value">
               {loadedModel ? loadedModel.vertexCount.toLocaleString() : liveMetrics.vertices.toLocaleString()}
             </span>
@@ -926,7 +993,9 @@ export default function Viewport3D({
           <div className="hud-stat-row">
             <span>Faces</span>
             <span className="hud-stat-value">
-              {loadedModel ? loadedModel.faceCount.toLocaleString() : liveMetrics.triangles.toLocaleString()}
+              {loadedModel
+                ? (loadedModel.isMesh ? loadedModel.faceCount.toLocaleString() : 'None (Point Cloud)')
+                : liveMetrics.triangles.toLocaleString()}
             </span>
           </div>
 
@@ -934,7 +1003,7 @@ export default function Viewport3D({
             <div className="hud-stat-row">
               <span>Vertex Colors</span>
               <span className="hud-stat-value" style={{ color: loadedModel.hasVertexColors ? 'var(--accent)' : 'var(--text-muted)' }}>
-                {loadedModel.hasVertexColors ? 'Detected' : 'None (Neutral)'}
+                {loadedModel.hasVertexColors ? 'Detected' : 'None (Fallback)'}
               </span>
             </div>
           )}

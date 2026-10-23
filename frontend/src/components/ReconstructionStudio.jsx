@@ -71,13 +71,20 @@ export default function ReconstructionStudio({
             path: data.plyPath,
             name: 'sparse.ply',
             sizeBytes: data.modelStats?.pointsSize || 0,
+            isMesh: Boolean(data.modelStats?.isMesh),
+            isPointCloud: Boolean(data.modelStats?.isPointCloud ?? true),
             lastModified: Date.now(),
           });
         }
       }
 
       if (data.status === 'failed') {
+        setModelStats(null);
         setErrorMessage(data.error || 'Reconstruction failed.');
+      }
+
+      if (data.status === 'cancelled') {
+        setModelStats(null);
       }
     });
 
@@ -145,9 +152,10 @@ export default function ReconstructionStudio({
       if (!outputDir) return; // User canceled
     }
 
-    // Reset logs and error
+    // Reset logs, model stats, and error
     setReconstructionLogs([]);
     setErrorMessage(null);
+    setModelStats(null);
     setElapsedSeconds(0);
     setJobStatus('running');
 

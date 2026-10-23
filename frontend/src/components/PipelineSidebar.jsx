@@ -16,6 +16,13 @@ export default function PipelineSidebar({
 
   // Determine stage status based on active reconstruction state
   const getStageStatus = (stageId, stageNum) => {
+    if (jobStatus === 'cancelled') {
+      if (activeStageKey === 'feature_extractor' && stageId === 'feature_extraction') return 'cancelled';
+      if (activeStageKey === 'exhaustive_matcher' && stageId === 'feature_matching') return 'cancelled';
+      if (activeStageKey === 'mapper' && stageId === 'sparse_reconstruction') return 'cancelled';
+      return 'pending';
+    }
+
     if (stageId === 'feature_extraction') {
       if (activeStageKey === 'feature_extractor' && isRunning) return 'running';
       if (jobStatus === 'completed' || (isRunning && (activeStageKey === 'exhaustive_matcher' || activeStageKey === 'mapper'))) return 'done';
@@ -35,7 +42,8 @@ export default function PipelineSidebar({
       return 'pending';
     }
     if (stageId === 'mesh_reconstruction') {
-      return currentProject?.modelFileReference ? 'ready' : 'pending';
+      // Only mark ready if an actual polygonal mesh is attached (not sparse.ply)
+      return currentProject?.modelFileReference?.isMesh ? 'ready' : 'pending';
     }
     return 'pending';
   };
@@ -63,7 +71,9 @@ export default function PipelineSidebar({
       name: 'Sparse Point Cloud (SfM)',
       engine: 'COLMAP Mapper',
       status: getStageStatus('sparse_reconstruction', 3),
-      stats: 'Incremental camera pose & 3D triangulation',
+      stats: jobStatus === 'completed' && currentProject?.modelFileReference
+        ? `Point Cloud ready (${currentProject.modelFileReference.name})`
+        : 'Incremental camera pose & 3D triangulation',
     },
     {
       id: 'dense_reconstruction',
@@ -71,15 +81,17 @@ export default function PipelineSidebar({
       name: 'Dense Point Cloud',
       engine: 'OpenMVS Densify',
       status: 'pending',
-      stats: 'Sprint 6B: Excluded (Planned Sprint 6C)',
+      stats: 'Planned (Sprint 6C)',
     },
     {
       id: 'mesh_reconstruction',
       num: '05',
       name: 'Mesh Generation',
       engine: 'OpenMVS ReconstructMesh',
-      status: currentProject?.modelFileReference ? 'ready' : 'pending',
-      stats: currentProject?.modelFileReference ? `Attached PLY: ${currentProject.modelFileReference.name}` : 'Sprint 6B: Excluded (Planned Sprint 6C)',
+      status: currentProject?.modelFileReference?.isMesh ? 'ready' : 'pending',
+      stats: currentProject?.modelFileReference?.isMesh
+        ? `Attached Mesh: ${currentProject.modelFileReference.name}`
+        : 'Planned (Sprint 6C)',
     },
     {
       id: 'texture_mapping',
@@ -87,7 +99,7 @@ export default function PipelineSidebar({
       name: 'Texture Mapping',
       engine: 'OpenMVS TextureMesh',
       status: 'pending',
-      stats: 'Sprint 6B: Excluded (Planned next phase)',
+      stats: 'Planned (Future phase)',
     },
   ];
 

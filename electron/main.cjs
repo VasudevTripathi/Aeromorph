@@ -916,10 +916,263 @@ function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath
 }
 
 /**
+ * Parse COLMAP points3D binary file.
+ * Format:
+ * uint64 num_points
+ * for each point:
+ *   uint64 point3D_id
+ *   double x, y, z
+ *   uint8 r, g, b
+ *   double error
+ *   uint64 track_len
+ *   (uint32 image_id, uint32 point2D_idx) * track_len
+ */
+function parseColmapPoints3dBin(filePath, { maxPointsToCheck = 2000 } = {}) {
+  const stat = fs.statSync(filePath);
+  if (stat.size < 8) {
+    return { valid: false, pointsCount: 0, error: 'points3D.bin is truncated (less than 8 bytes).' };
+  }
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const headerBuf = Buffer.alloc(8);
+    fs.readSync(fd, headerBuf, 0, 8, 0);
+    const numPointsBig = headerBuf.readBigUInt64LE(0);
+    if (numPointsBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { valid: false, pointsCount: 0, error: 'points3D count exceeds safe integer limit.' };
+    }
+    const numPoints = Number(numPointsBig);
+    if (numPoints === 0) {
+      return { valid: false, pointsCount: 0, error: 'points3D.bin contains 0 points.' };
+    }
+
+    // Inspect first N points for coordinate validity
+    const checkCount = Math.min(numPoints, maxPointsToCheck);
+    let offset = 8;
+    for (let i = 0; i < checkCount; i++) {
+      // Fixed 51 bytes: 8 (id) + 24 (x,y,z) + 3 (rgb) + 8 (err) + 8 (track_len)
+      if (offset + 51 > stat.size) {
+        return { valid: false, pointsCount: numPoints, error: `points3D.bin truncated at point record ${i}.` };
+      }
+      const recordHeader = Buffer.alloc(51);
+      const bytesRead = fs.readSync(fd, recordHeader, 0, 51, offset);
+      if (bytesRead < 51) {
+        return { valid: false, pointsCount: numPoints, error: `points3D.bin truncated during record read ${i}.` };
+      }
+      const x = recordHeader.readDoubleLE(8);
+      const y = recordHeader.readDoubleLE(16);
+      const z = recordHeader.readDoubleLE(24);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        return { valid: false, pointsCount: numPoints, error: `points3D.bin contains non-finite coordinates at point ${i}.` };
+      }
+      const trackLenBig = recordHeader.readBigUInt64LE(43);
+      const trackBytes = Number(trackLenBig) * 8;
+      offset += 51 + trackBytes;
+      if (offset > stat.size && i < numPoints - 1) {
+        return { valid: false, pointsCount: numPoints, error: `points3D.bin track length extends beyond file bounds at point ${i}.` };
+      }
+    }
+
+    return { valid: true, pointsCount: numPoints, error: null };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Parse COLMAP points3D text file.
+ */
+function parseColmapPoints3dTxt(filePath, { maxPointsToCheck = 2000 } = {}) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split(/\r?\n/);
+  let count = 0;
+  let nonFiniteFound = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    count++;
+    if (count <= maxPointsToCheck) {
+      const parts = trimmed.split(/\s+/);
+      if (parts.length >= 4) {
+        const x = parseFloat(parts[1]);
+        const y = parseFloat(parts[2]);
+        const z = parseFloat(parts[3]);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+          nonFiniteFound = true;
+        }
+      }
+    }
+  }
+
+  if (count === 0) {
+    return { valid: false, pointsCount: 0, error: 'points3D.txt contains 0 points.' };
+  }
+  if (nonFiniteFound) {
+    return { valid: false, pointsCount: count, error: 'points3D.txt contains non-finite coordinates.' };
+  }
+  return { valid: true, pointsCount: count, error: null };
+}
+
+/**
+ * Parse COLMAP images binary file.
+ * uint64 num_reg_images
+ */
+function parseColmapImagesBin(filePath) {
+  const stat = fs.statSync(filePath);
+  if (stat.size < 8) {
+    return { valid: false, registeredImages: 0, error: 'images.bin is truncated (less than 8 bytes).' };
+  }
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const headerBuf = Buffer.alloc(8);
+    fs.readSync(fd, headerBuf, 0, 8, 0);
+    const numImagesBig = headerBuf.readBigUInt64LE(0);
+    const numImages = Number(numImagesBig);
+    return {
+      valid: numImages >= 2,
+      registeredImages: numImages,
+      error: numImages < 2 ? `Only ${numImages} image(s) registered (minimum 2 required for 3D triangulation).` : null,
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Parse COLMAP images text file.
+ */
+function parseColmapImagesTxt(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split(/\r?\n/);
+  let imageCount = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length >= 10 && !isNaN(parseInt(parts[0], 10)) && !isNaN(parseFloat(parts[1]))) {
+      imageCount++;
+    }
+  }
+  return {
+    valid: imageCount >= 2,
+    registeredImages: imageCount,
+    error: imageCount < 2 ? `Only ${imageCount} image(s) registered (minimum 2 required).` : null,
+  };
+}
+
+/**
+ * Parse COLMAP cameras binary file.
+ */
+function parseColmapCamerasBin(filePath) {
+  const stat = fs.statSync(filePath);
+  if (stat.size < 8) return { camerasCount: 0 };
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(8);
+    fs.readSync(fd, buf, 0, 8, 0);
+    return { camerasCount: Number(buf.readBigUInt64LE(0)) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Parse COLMAP cameras text file.
+ */
+function parseColmapCamerasTxt(filePath) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.split(/\r?\n/);
+  let count = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#')) count++;
+  }
+  return { camerasCount: count };
+}
+
+/**
+ * Validate an exported PLY file.
+ * Inspects header without loading entire multi-megabyte payload into memory.
+ */
+function validateExportedPly(plyPath) {
+  if (!fs.existsSync(plyPath)) {
+    return { valid: false, error: 'Exported PLY file does not exist.' };
+  }
+  const stat = fs.statSync(plyPath);
+  if (stat.size < 30) {
+    return { valid: false, error: 'Exported PLY file is empty or corrupted.' };
+  }
+
+  const readSize = Math.min(stat.size, 8192);
+  const fd = fs.openSync(plyPath, 'r');
+  let headerText = '';
+  try {
+    const buf = Buffer.alloc(readSize);
+    fs.readSync(fd, buf, 0, readSize, 0);
+    headerText = buf.toString('latin1');
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const endHeaderIdx = headerText.indexOf('end_header');
+  if (!headerText.startsWith('ply') || endHeaderIdx === -1) {
+    return { valid: false, error: 'File is not a valid PLY file (missing PLY header).' };
+  }
+
+  const header = headerText.slice(0, endHeaderIdx);
+  const vertexMatch = header.match(/element\s+vertex\s+(\d+)/);
+  if (!vertexMatch) {
+    return { valid: false, error: 'PLY header contains no vertex element declaration.' };
+  }
+  const vertexCount = parseInt(vertexMatch[1], 10);
+  if (vertexCount <= 0) {
+    return { valid: false, error: 'Exported PLY contains 0 vertices. Reconstruction produced an empty model.' };
+  }
+
+  const faceMatch = header.match(/element\s+face\s+(\d+)/);
+  const faceCount = faceMatch ? parseInt(faceMatch[1], 10) : 0;
+  const isMesh = faceCount > 0;
+
+  return {
+    valid: true,
+    vertexCount,
+    faceCount,
+    isMesh,
+    isPointCloud: !isMesh,
+    fileSizeBytes: stat.size,
+    error: null,
+  };
+}
+
+/**
+ * Distinguish a valid model from quality issues.
+ */
+function evaluateModelQuality(pointsCount, registeredImages, totalInputImages) {
+  const coverageRatio = totalInputImages > 0 ? registeredImages / totalInputImages : 1.0;
+  let status = 'good';
+  let warning = null;
+
+  if (registeredImages < 2 || pointsCount <= 0) {
+    return { status: 'failed', warning: 'Reconstruction failed: insufficient registered images or points.' };
+  }
+
+  if (coverageRatio < 0.5 || pointsCount < 50) {
+    status = 'warning';
+    warning = `Low coverage reconstruction: ${registeredImages} of ${totalInputImages} photographs registered (${pointsCount} 3D points). Visual overlap may be low.`;
+  } else if (coverageRatio < 0.8 || pointsCount < 200) {
+    status = 'acceptable';
+    warning = `Partial reconstruction: ${registeredImages} of ${totalInputImages} photographs registered (${pointsCount} 3D points).`;
+  }
+
+  return { status, warning, coverageRatio };
+}
+
+/**
  * Verify whether a valid sparse reconstruction model was produced
  * Inspects all numbered directories (0, 1, 2...) created by COLMAP mapper.
+ * Validates actual binary or text files for points and registered images.
  */
-function verifySparseReconstructionOutput(sparseDir) {
+function verifySparseReconstructionOutput(sparseDir, totalInputImages = 0) {
   if (!fs.existsSync(sparseDir)) {
     return { valid: false, error: 'Sparse output directory was not created by mapper.' };
   }
@@ -943,11 +1196,13 @@ function verifySparseReconstructionOutput(sparseDir) {
   if (modelDirs.length === 0) {
     return {
       valid: false,
-      error: 'COLMAP finished, but no sparse model (0/) was reconstructed. Check visual overlap across images.',
+      error: 'Reconstruction failed: COLMAP did not reconstruct any sparse model (0/). Check image overlap and visual feature contrast.',
     };
   }
 
   const candidateModels = [];
+  const modelErrors = [];
+
   for (const m of modelDirs) {
     const pointsBin = path.join(m.fullPath, 'points3D.bin');
     const pointsTxt = path.join(m.fullPath, 'points3D.txt');
@@ -960,34 +1215,98 @@ function verifySparseReconstructionOutput(sparseDir) {
     const hasCameras = fs.existsSync(camerasBin) || fs.existsSync(camerasTxt);
     const hasImages = fs.existsSync(imagesBin) || fs.existsSync(imagesTxt);
 
-    if (hasPoints && hasCameras && hasImages) {
-      let pointsSize = 0;
-      try {
-        const stat = fs.statSync(fs.existsSync(pointsBin) ? pointsBin : pointsTxt);
-        pointsSize = stat.size;
-      } catch {}
-
-      if (pointsSize > 0) {
-        candidateModels.push({
-          modelDir: m.fullPath,
-          modelName: m.dirName,
-          modelIndex: m.index,
-          pointsSize,
-          isBinary: fs.existsSync(pointsBin),
-        });
-      }
+    if (!hasPoints || !hasCameras || !hasImages) {
+      modelErrors.push(`Model ${m.dirName}: missing one or more required COLMAP model files (points3D, cameras, images).`);
+      continue;
     }
+
+    // Parse points3D
+    let pointsResult;
+    try {
+      if (fs.existsSync(pointsBin)) {
+        pointsResult = parseColmapPoints3dBin(pointsBin);
+      } else {
+        pointsResult = parseColmapPoints3dTxt(pointsTxt);
+      }
+    } catch (err) {
+      pointsResult = { valid: false, pointsCount: 0, error: err.message };
+    }
+
+    if (!pointsResult.valid || pointsResult.pointsCount <= 0) {
+      modelErrors.push(`Model ${m.dirName}: ${pointsResult.error || '0 points'}`);
+      continue;
+    }
+
+    // Parse images
+    let imagesResult;
+    try {
+      if (fs.existsSync(imagesBin)) {
+        imagesResult = parseColmapImagesBin(imagesBin);
+      } else {
+        imagesResult = parseColmapImagesTxt(imagesTxt);
+      }
+    } catch (err) {
+      imagesResult = { valid: false, registeredImages: 0, error: err.message };
+    }
+
+    if (!imagesResult.valid || imagesResult.registeredImages < 2) {
+      modelErrors.push(`Model ${m.dirName}: ${imagesResult.error || 'fewer than 2 registered images'}`);
+      continue;
+    }
+
+    // Parse cameras
+    let camerasCount = 1;
+    try {
+      if (fs.existsSync(camerasBin)) {
+        camerasCount = parseColmapCamerasBin(camerasBin).camerasCount;
+      } else if (fs.existsSync(camerasTxt)) {
+        camerasCount = parseColmapCamerasTxt(camerasTxt).camerasCount;
+      }
+    } catch {}
+
+    let pointsSize = 0;
+    try {
+      const pStat = fs.statSync(fs.existsSync(pointsBin) ? pointsBin : pointsTxt);
+      pointsSize = pStat.size;
+    } catch {}
+
+    const quality = evaluateModelQuality(pointsResult.pointsCount, imagesResult.registeredImages, totalInputImages);
+
+    candidateModels.push({
+      modelDir: m.fullPath,
+      modelName: m.dirName,
+      modelIndex: m.index,
+      pointsSize,
+      pointsCount: pointsResult.pointsCount,
+      registeredImages: imagesResult.registeredImages,
+      camerasCount,
+      totalInputImages,
+      qualityStatus: quality.status,
+      warning: quality.warning,
+      isBinary: fs.existsSync(pointsBin),
+    });
   }
 
   if (candidateModels.length === 0) {
-    return { valid: false, error: 'Reconstructed sparse model contains 0 3D points.' };
+    const detail = modelErrors.length > 0 ? ` Details: ${modelErrors.join('; ')}` : '';
+    return {
+      valid: false,
+      error: `Reconstruction failed: COLMAP could not find an initial image pair or triangulate any 3D points.${detail} Ensure photographs have sufficient visual overlap (>= 60%), consistent lighting, and varied viewpoints.`,
+    };
   }
 
-  // Model 0 is preferred if present and valid; otherwise pick model with largest point file
+  // Rank candidate models:
+  // 1. Registered images count (highest first)
+  // 2. Points count (highest first)
+  // 3. Lower index (0 preferred over 1 if equal)
   candidateModels.sort((a, b) => {
-    if (a.modelIndex === 0) return -1;
-    if (b.modelIndex === 0) return 1;
-    return b.pointsSize - a.pointsSize;
+    if (b.registeredImages !== a.registeredImages) {
+      return b.registeredImages - a.registeredImages;
+    }
+    if (b.pointsCount !== a.pointsCount) {
+      return b.pointsCount - a.pointsCount;
+    }
+    return a.modelIndex - b.modelIndex;
   });
 
   const bestModel = candidateModels[0];
@@ -996,8 +1315,15 @@ function verifySparseReconstructionOutput(sparseDir) {
     modelDir: bestModel.modelDir,
     modelIndex: bestModel.modelIndex,
     pointsSize: bestModel.pointsSize,
+    pointsCount: bestModel.pointsCount,
+    registeredImages: bestModel.registeredImages,
+    camerasCount: bestModel.camerasCount,
+    totalInputImages: bestModel.totalInputImages,
+    qualityStatus: bestModel.qualityStatus,
+    warning: bestModel.warning,
     isBinary: bestModel.isBinary,
     totalModelsFound: candidateModels.length,
+    candidateModels,
   };
 }
 
@@ -1220,14 +1546,21 @@ async function startSparseReconstructionJob(config = {}) {
         return;
       }
 
-      // Verify sparse model output
+      // Verify sparse model output against COLMAP models
       appendJobLog('mapper', 'Verifying sparse reconstruction model output...');
-      const verifyRes = verifySparseReconstructionOutput(sparseDir);
+      const verifyRes = verifySparseReconstructionOutput(sparseDir, dirCheck.imageCount);
       if (!verifyRes.valid) {
         throw new Error(verifyRes.error);
       }
 
-      appendJobLog('mapper', `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsSize} bytes points3D, total models: ${verifyRes.totalModelsFound || 1})`);
+      appendJobLog(
+        'mapper',
+        `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsCount.toLocaleString()} 3D points, ${verifyRes.registeredImages}/${dirCheck.imageCount} images registered, quality: ${verifyRes.qualityStatus})`
+      );
+
+      if (verifyRes.warning) {
+        appendJobLog('mapper', `Quality notice: ${verifyRes.warning}`);
+      }
 
       // Cancellation check before model converter
       if (activeReconstructionJob.status === 'cancelled') {
@@ -1235,78 +1568,70 @@ async function startSparseReconstructionJob(config = {}) {
         return;
       }
 
-      // Attempt model conversion to PLY for 3D Viewport
-      let plyPath = null;
-      try {
-        appendJobLog('export', 'Converting sparse model to PLY for 3D viewport preview...');
-        const convArgs = buildColmapStageArgs('model_converter', {
-          databasePath: dbPath,
-          imagePath: dirCheck.imageDir,
-          sparseOutputPath: sparseDir,
-          inputModelPath: verifyRes.modelDir,
-        });
-
-        await new Promise((resolve) => {
-          if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
-            return resolve(false);
-          }
-          let convProc;
-          try {
-            convProc = spawnFn(colmapExe, convArgs, {
-              cwd: runDir,
-              shell: false,
-              windowsHide: true,
-            });
-            if (activeReconstructionJob) {
-              activeReconstructionJob.currentProcess = convProc;
-            }
-          } catch {
-            return resolve(false);
-          }
-
-          convProc.stdout?.on('data', (chunk) => {
-            const lines = chunk.toString().split(/\r?\n/);
-            for (const l of lines) {
-              if (l.trim()) appendJobLog('export', l);
-            }
-          });
-
-          convProc.stderr?.on('data', (chunk) => {
-            const lines = chunk.toString().split(/\r?\n/);
-            for (const l of lines) {
-              if (l.trim()) appendJobLog('export', l);
-            }
-          });
-
-          convProc.on('close', (c) => {
-            if (activeReconstructionJob) {
-              activeReconstructionJob.currentProcess = null;
-            }
-            resolve(c === 0 && (!activeReconstructionJob || activeReconstructionJob.status !== 'cancelled'));
-          });
-          convProc.on('error', () => {
-            if (activeReconstructionJob) {
-              activeReconstructionJob.currentProcess = null;
-            }
-            resolve(false);
-          });
-        });
-
-        if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
-          cleanupTemporaryJobArtifacts(runDir, { jobId });
-          activeReconstructionJob.settled = true;
-          return;
-        }
-
-        const expectedPly = path.join(runDir, 'sparse.ply');
-        if (fs.existsSync(expectedPly) && fs.statSync(expectedPly).size > 0) {
-          plyPath = path.normalize(path.resolve(expectedPly));
-          authorizedPlyPaths.add(toCanonicalPath(plyPath));
-          appendJobLog('export', `Exported sparse point cloud to PLY: ${plyPath}`);
-        }
-      } catch (convErr) {
-        appendJobLog('export', `Note: PLY conversion skipped: ${convErr.message}`);
+      // Export model to PLY for 3D Viewport
+      const expectedPly = path.join(runDir, 'sparse.ply');
+      // Always remove any pre-existing PLY to prevent serving stale files from previous attempts
+      if (fs.existsSync(expectedPly)) {
+        try {
+          fs.unlinkSync(expectedPly);
+        } catch {}
       }
+
+      appendJobLog('export', 'Converting sparse model to PLY for 3D viewport preview...');
+      const convArgs = buildColmapStageArgs('model_converter', {
+        databasePath: dbPath,
+        imagePath: dirCheck.imageDir,
+        sparseOutputPath: sparseDir,
+        inputModelPath: verifyRes.modelDir,
+      });
+
+      const conversionSuccess = await new Promise((resolve) => {
+        if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+          return resolve(false);
+        }
+        let convProc;
+        try {
+          convProc = spawnFn(colmapExe, convArgs, {
+            cwd: runDir,
+            shell: false,
+            windowsHide: true,
+          });
+          if (activeReconstructionJob) {
+            activeReconstructionJob.currentProcess = convProc;
+          }
+        } catch (convSpawnErr) {
+          appendJobLog('export', `Failed to start model_converter: ${convSpawnErr.message}`);
+          return resolve(false);
+        }
+
+        convProc.stdout?.on('data', (chunk) => {
+          const lines = chunk.toString().split(/\r?\n/);
+          for (const l of lines) {
+            if (l.trim()) appendJobLog('export', l);
+          }
+        });
+
+        convProc.stderr?.on('data', (chunk) => {
+          const lines = chunk.toString().split(/\r?\n/);
+          for (const l of lines) {
+            if (l.trim()) appendJobLog('export', l);
+          }
+        });
+
+        convProc.on('close', (c) => {
+          if (activeReconstructionJob) {
+            activeReconstructionJob.currentProcess = null;
+          }
+          resolve(c === 0 && (!activeReconstructionJob || activeReconstructionJob.status !== 'cancelled'));
+        });
+        convProc.on('error', (err) => {
+          if (activeReconstructionJob) {
+            activeReconstructionJob.currentProcess = null;
+          }
+          appendJobLog('export', `model_converter process error: ${err.message}`);
+          resolve(false);
+        });
+      });
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         cleanupTemporaryJobArtifacts(runDir, { jobId });
@@ -1314,16 +1639,49 @@ async function startSparseReconstructionJob(config = {}) {
         return;
       }
 
+      if (!conversionSuccess || !fs.existsSync(expectedPly)) {
+        throw new Error('COLMAP model_converter failed to export sparse.ply from the reconstructed model.');
+      }
+
+      // Validate exported PLY content (must contain vertices, valid format)
+      const plyValidation = validateExportedPly(expectedPly);
+      if (!plyValidation.valid) {
+        throw new Error(`Exported PLY validation failed: ${plyValidation.error}`);
+      }
+
+      const plyPath = path.normalize(path.resolve(expectedPly));
+      authorizedPlyPaths.add(toCanonicalPath(plyPath));
+      appendJobLog(
+        'export',
+        `Exported sparse point cloud to PLY: ${plyPath} (${plyValidation.vertexCount.toLocaleString()} vertices, ${plyValidation.fileSizeBytes} bytes)`
+      );
+
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
+        return;
+      }
+
+      const modelStats = {
+        modelDir: verifyRes.modelDir,
+        modelIndex: verifyRes.modelIndex,
+        pointsCount: verifyRes.pointsCount,
+        registeredImages: verifyRes.registeredImages,
+        totalInputImages: dirCheck.imageCount,
+        qualityStatus: verifyRes.qualityStatus,
+        warning: verifyRes.warning,
+        vertexCount: plyValidation.vertexCount,
+        isPointCloud: plyValidation.isPointCloud,
+        isMesh: plyValidation.isMesh,
+        plyPath,
+      };
+
       if (activeReconstructionJob) {
         activeReconstructionJob.status = 'completed';
         activeReconstructionJob.settled = true;
         activeReconstructionJob.endTime = Date.now();
         activeReconstructionJob.plyPath = plyPath;
-        activeReconstructionJob.modelStats = {
-          modelDir: verifyRes.modelDir,
-          pointsSize: verifyRes.pointsSize,
-          plyPath,
-        };
+        activeReconstructionJob.modelStats = modelStats;
       }
 
       appendJobLog('system', '✓ Sparse Reconstruction Pipeline completed successfully!');
@@ -1337,7 +1695,8 @@ async function startSparseReconstructionJob(config = {}) {
         stageIndex: 3,
         totalStages: 3,
         elapsedMs: activeReconstructionJob ? activeReconstructionJob.endTime - activeReconstructionJob.startTime : 0,
-        modelStats: activeReconstructionJob ? activeReconstructionJob.modelStats : null,
+        modelStats,
+        warning: verifyRes.warning,
         plyPath,
         runDir,
       });
@@ -1918,6 +2277,14 @@ module.exports = {
   validateReconstructionDirectories,
   buildColmapStageArgs,
   verifySparseReconstructionOutput,
+  parseColmapPoints3dBin,
+  parseColmapPoints3dTxt,
+  parseColmapImagesBin,
+  parseColmapImagesTxt,
+  parseColmapCamerasBin,
+  parseColmapCamerasTxt,
+  validateExportedPly,
+  evaluateModelQuality,
   startSparseReconstructionJob,
   cancelSparseReconstructionJob,
   getReconstructionStatusJob,
