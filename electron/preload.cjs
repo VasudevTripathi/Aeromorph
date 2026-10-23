@@ -161,4 +161,90 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
     ipcRenderer.on('reconstruction:log', subscription);
     return () => ipcRenderer.removeListener('reconstruction:log', subscription);
   },
+
+  /**
+   * Detect local Python 3 environment and check for installed CV libraries (Sprint 7)
+   * @param {Object} options - Optional { customPythonPath?: string }
+   * @returns {Promise<{ detected: boolean, path?: string, version?: string, dependencies?: Object, environmentReady: boolean, status: string, error?: string }>}
+   */
+  detectPython: (options = {}) => {
+    const sanitized = {
+      customPythonPath: typeof options?.customPythonPath === 'string' && !options.customPythonPath.includes('\0')
+        ? options.customPythonPath.trim()
+        : null,
+    };
+    return ipcRenderer.invoke('system:detectPython', sanitized);
+  },
+
+  /**
+   * Prompt user with native Windows file picker to locate python.exe or py.exe
+   * @returns {Promise<{ canceled: boolean, path?: string, version?: string, error?: string }>}
+   */
+  selectPythonExecutable: () => ipcRenderer.invoke('dialog:selectPythonExecutable'),
+
+  /**
+   * Launch local Python computer vision pre-flight analysis worker (Sprint 7)
+   * @param {Object} config - { inputDir: string, reportPath?: string, customPythonPath?: string, maxHamming?: number }
+   * @returns {Promise<{ success: boolean, jobId?: string, reportPath?: string, error?: string }>}
+   */
+  startCvAnalysis: (config = {}) => {
+    if (!config || typeof config !== 'object') {
+      return Promise.reject(new Error('Invalid analysis configuration argument.'));
+    }
+    const sanitized = {
+      inputDir: typeof config.inputDir === 'string' ? config.inputDir.trim() : '',
+      reportPath: typeof config.reportPath === 'string' ? config.reportPath.trim() : null,
+      customPythonPath: typeof config.customPythonPath === 'string' ? config.customPythonPath.trim() : null,
+      maxHamming: typeof config.maxHamming === 'number' ? config.maxHamming : 8,
+    };
+    return ipcRenderer.invoke('cv:startAnalysis', sanitized);
+  },
+
+  /**
+   * Cancel active computer vision analysis worker
+   * @returns {Promise<{ canceled: boolean, message?: string }>}
+   */
+  cancelCvAnalysis: () => ipcRenderer.invoke('cv:cancelAnalysis'),
+
+  /**
+   * Get active computer vision analysis worker status, progress, and report
+   * @returns {Promise<{ id?: string, status: string, settled?: boolean, progress?: Object, report?: Object, logs: Array }>}
+   */
+  getCvAnalysisStatus: () => ipcRenderer.invoke('cv:getStatus'),
+
+  /**
+   * Read structured Computer Vision JSON report from validated path
+   * @param {string} reportPath - Path to generated report JSON
+   * @returns {Promise<{ success: boolean, report?: Object, error?: string }>}
+   */
+  readCvReport: (reportPath) => {
+    if (typeof reportPath !== 'string' || !reportPath.trim() || reportPath.includes('\0')) {
+      return Promise.reject(new Error('Invalid report path argument'));
+    }
+    return ipcRenderer.invoke('cv:readReport', reportPath.trim());
+  },
+
+  /**
+   * Subscribe to live computer vision analysis progress events
+   * @param {Function} callback - (progressData) => void
+   * @returns {Function} Unsubscribe function
+   */
+  onCvProgress: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const subscription = (_event, data) => callback(data);
+    ipcRenderer.on('cv:progress', subscription);
+    return () => ipcRenderer.removeListener('cv:progress', subscription);
+  },
+
+  /**
+   * Subscribe to live computer vision log streaming events
+   * @param {Function} callback - (logEntry) => void
+   * @returns {Function} Unsubscribe function
+   */
+  onCvLog: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    const subscription = (_event, entry) => callback(entry);
+    ipcRenderer.on('cv:log', subscription);
+    return () => ipcRenderer.removeListener('cv:log', subscription);
+  },
 });

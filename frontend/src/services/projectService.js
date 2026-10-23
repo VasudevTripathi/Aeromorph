@@ -523,26 +523,27 @@ export function clearProjectSessionAssets(projectId) {
 
 /**
  * Retrieve user-configured custom executable paths from local storage
- * @returns {{ colmapPath: string|null, openmvsPath: string|null }}
+ * @returns {{ colmapPath: string|null, openmvsPath: string|null, pythonPath: string|null }}
  */
 export function getCustomToolPaths() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_TOOL_PATHS);
-    if (!raw) return { colmapPath: null, openmvsPath: null };
+    if (!raw) return { colmapPath: null, openmvsPath: null, pythonPath: null };
     const parsed = JSON.parse(raw);
     return {
       colmapPath: typeof parsed.colmapPath === 'string' ? parsed.colmapPath : null,
       openmvsPath: typeof parsed.openmvsPath === 'string' ? parsed.openmvsPath : null,
+      pythonPath: typeof parsed.pythonPath === 'string' ? parsed.pythonPath : null,
     };
   } catch {
-    return { colmapPath: null, openmvsPath: null };
+    return { colmapPath: null, openmvsPath: null, pythonPath: null };
   }
 }
 
 /**
  * Persist user-configured custom executable paths to local storage
- * @param {Object} paths - Candidate paths { colmapPath?: string, openmvsPath?: string }
- * @returns {{ colmapPath: string|null, openmvsPath: string|null }}
+ * @param {Object} paths - Candidate paths { colmapPath?: string, openmvsPath?: string, pythonPath?: string }
+ * @returns {{ colmapPath: string|null, openmvsPath: string|null, pythonPath: string|null }}
  */
 export function saveCustomToolPaths(paths = {}) {
   try {
@@ -550,6 +551,7 @@ export function saveCustomToolPaths(paths = {}) {
     const updated = {
       colmapPath: paths.colmapPath !== undefined ? paths.colmapPath : current.colmapPath,
       openmvsPath: paths.openmvsPath !== undefined ? paths.openmvsPath : current.openmvsPath,
+      pythonPath: paths.pythonPath !== undefined ? paths.pythonPath : current.pythonPath,
     };
     localStorage.setItem(STORAGE_KEY_TOOL_PATHS, JSON.stringify(updated));
     return updated;
@@ -558,3 +560,4 @@ export function saveCustomToolPaths(paths = {}) {
     return paths;
   }
 }
+

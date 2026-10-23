@@ -67,6 +67,14 @@ const ALLOWED_OPENMVS_NAMES = new Set([
   'texturemesh',
 ]);
 
+const ALLOWED_PYTHON_NAMES = new Set([
+  'python.exe',
+  'python3.exe',
+  'py.exe',
+  'python',
+  'python3',
+]);
+
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff', '.bmp']);
 const MAX_DIRECTORY_SCAN_ENTRIES = 5000;
 
@@ -422,6 +430,192 @@ async function detectOpenMvsTool(customPath) {
     error: customPathStale
       ? `Configured OpenMVS path "${customPath}" was not found or is invalid.`
       : 'OpenMVS executable (InterfaceCOLMAP.exe) was not found in standard paths or PATH. Please configure path.',
+  };
+}
+
+/**
+ * Generate conservative list of candidate installation paths for Python
+ */
+function getPythonCandidates(customPath) {
+  const candidates = [];
+  if (customPath && typeof customPath === 'string') {
+    candidates.push(customPath);
+  }
+
+  const fromPython = findBinaryInPath('python.exe') || findBinaryInPath('python');
+  const fromPy = findBinaryInPath('py.exe') || findBinaryInPath('py');
+  const fromPython3 = findBinaryInPath('python3.exe') || findBinaryInPath('python3');
+  if (fromPython) candidates.push(fromPython);
+  if (fromPy) candidates.push(fromPy);
+  if (fromPython3) candidates.push(fromPython3);
+
+  const home = os.homedir();
+  const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  const windir = process.env.WINDIR || 'C:\\Windows';
+
+  const pythonVersions = ['Python312', 'Python311', 'Python310', 'Python313', 'Python314', 'Python39'];
+
+  for (const ver of pythonVersions) {
+    candidates.push(path.join(localAppData, 'Programs', 'Python', ver, 'python.exe'));
+    candidates.push(`C:\\${ver}\\python.exe`);
+    candidates.push(path.join(progFiles, ver, 'python.exe'));
+  }
+
+  candidates.push(path.join(windir, 'py.exe'));
+  candidates.push(path.join(localAppData, 'Programs', 'Python', 'Launcher', 'py.exe'));
+
+  return candidates;
+}
+
+/**
+ * Query Python version banner and installed dependencies via safe bounded execution (shell: false)
+ */
+function queryPythonInfo(executablePath, { args = null } = {}) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const probeScript = 'import sys, json; deps = {"numpy": False, "pillow": False, "opencv": False};\n' +
+      'try:\n  import numpy; deps["numpy"] = str(numpy.__version__)\nexcept: pass\n' +
+      'try:\n  import PIL; deps["pillow"] = str(PIL.__version__)\nexcept: pass\n' +
+      'try:\n  import cv2; deps["opencv"] = str(cv2.__version__)\nexcept: pass\n' +
+      'print(json.dumps({"version": sys.version.split()[0], "major": sys.version_info[0], "minor": sys.version_info[1], "dependencies": deps}))';
+
+    const execArgs = Array.isArray(args) ? [...args, '-c', probeScript] : ['-c', probeScript];
+
+    const child = execFile(
+      executablePath,
+      execArgs,
+      { shell: false, timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true },
+      (err, stdout, stderr) => {
+        if (resolved) return;
+        resolved = true;
+
+        if (err && err.code === 'ETIMEDOUT') {
+          try { child.kill('SIGKILL'); } catch {}
+          return resolve({
+            detected: false,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: null,
+            status: 'Timeout',
+            error: 'Process timed out querying Python interpreter.',
+            dependencies: { numpy: false, pillow: false, opencv: false },
+            environmentReady: false,
+          });
+        }
+
+        const output = (stdout || '').trim();
+        try {
+          const parsed = JSON.parse(output);
+          const hasNumpy = Boolean(parsed.dependencies?.numpy);
+          const hasPillow = Boolean(parsed.dependencies?.pillow);
+          const hasCv = Boolean(parsed.dependencies?.opencv);
+          return resolve({
+            detected: true,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: parsed.version,
+            major: parsed.major,
+            minor: parsed.minor,
+            dependencies: parsed.dependencies || {},
+            hasNumpy,
+            hasPillow,
+            hasCv,
+            environmentReady: parsed.major >= 3 && parsed.minor >= 8,
+            status: 'Ready',
+            error: null,
+          });
+        } catch {
+          if (err) {
+            return resolve({
+              detected: false,
+              path: executablePath,
+              name: path.basename(executablePath),
+              version: null,
+              status: 'Execution Error',
+              error: `Failed to execute python: ${err.message}`,
+              dependencies: { numpy: false, pillow: false, opencv: false },
+              environmentReady: false,
+            });
+          }
+          return resolve({
+            detected: false,
+            path: executablePath,
+            name: path.basename(executablePath),
+            version: null,
+            status: 'Parse Error',
+            error: 'Unexpected output from Python probe.',
+            dependencies: { numpy: false, pillow: false, opencv: false },
+            environmentReady: false,
+          });
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Perform safe detection of Python toolchain and select the best candidate interpreter
+ */
+async function detectPythonTool(customPath) {
+  let customPathStale = false;
+  if (customPath && typeof customPath === 'string' && customPath.trim()) {
+    if (!validateBinaryExecutable(customPath, ALLOWED_PYTHON_NAMES)) {
+      customPathStale = true;
+    }
+  }
+
+  const candidatePaths = getPythonCandidates(customPath);
+  const evaluated = [];
+  const visitedPaths = new Set();
+
+  for (const candidate of candidatePaths) {
+    const valid = validateBinaryExecutable(candidate, ALLOWED_PYTHON_NAMES);
+    if (!valid) continue;
+    const norm = toCanonicalPath(valid);
+    if (visitedPaths.has(norm)) continue;
+    visitedPaths.add(norm);
+
+    const info = await queryPythonInfo(valid);
+    if (info.detected && info.environmentReady) {
+      let score = 10;
+      if (info.hasNumpy) score += 20;
+      if (info.hasPillow) score += 10;
+      if (info.hasCv) score += 10;
+      if (info.name.toLowerCase() !== 'py.exe') score += 5;
+      if (info.major === 3 && (info.minor === 10 || info.minor === 11 || info.minor === 12)) score += 5;
+
+      evaluated.push({ ...info, score, isCustom: customPath && norm === toCanonicalPath(customPath) });
+    }
+  }
+
+  if (customPath && !customPathStale) {
+    const customMatch = evaluated.find((e) => e.isCustom);
+    if (customMatch) {
+      return customMatch;
+    }
+  }
+
+  if (evaluated.length > 0) {
+    evaluated.sort((a, b) => b.score - a.score);
+    const best = evaluated[0];
+    if (customPathStale) {
+      best.warning = `Configured custom Python path "${customPath}" is invalid or no longer exists. Fallen back to auto-detected binary.`;
+    }
+    return best;
+  }
+
+  return {
+    detected: false,
+    path: null,
+    name: null,
+    version: null,
+    dependencies: { numpy: false, pillow: false, opencv: false },
+    environmentReady: false,
+    status: 'Not Detected',
+    error: customPathStale
+      ? `Configured Python path "${customPath}" was not found or is invalid.`
+      : 'Python 3 interpreter was not found in standard paths or PATH. Please configure path.',
   };
 }
 
@@ -1869,6 +2063,426 @@ function getReconstructionStatusJob() {
 }
 
 // ------------------------------------------------------------------------------
+// Sprint 7: Local Python Computer Vision Worker (Safe Subprocess, Incremental)
+// ------------------------------------------------------------------------------
+
+let activeCvJob = null;
+
+function emitCvProgress(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('cv:progress', payload);
+    } catch {}
+  }
+}
+
+function emitCvLog(entry) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('cv:log', entry);
+    } catch {}
+  }
+}
+
+/**
+ * Build fixed argument array for the Python CV analysis worker (shell: false)
+ */
+function buildCvWorkerArgs({ inputDir, reportPath, jobId, maxHamming = 8 }) {
+  if (typeof inputDir !== 'string' || !inputDir.trim() || inputDir.includes('\0')) {
+    throw new Error('Invalid input directory path.');
+  }
+  if (typeof reportPath !== 'string' || !reportPath.trim() || reportPath.includes('\0')) {
+    throw new Error('Invalid report path.');
+  }
+
+  const args = [
+    '-m',
+    'aeromorph_cv.pipeline',
+    '--input-dir',
+    path.normalize(path.resolve(inputDir.trim())),
+    '--output-report',
+    path.normalize(path.resolve(reportPath.trim())),
+  ];
+
+  if (jobId && typeof jobId === 'string' && jobId.trim() && !jobId.includes('\0')) {
+    args.push('--job-id', jobId.trim());
+  }
+
+  const maxH = Number.isInteger(maxHamming) && maxHamming >= 0 && maxHamming <= 64 ? maxHamming : 8;
+  args.push('--max-hamming', String(maxH));
+
+  return args;
+}
+
+/**
+ * Launch Python Computer Vision Pre-flight Analysis Job
+ */
+async function startCvAnalysisJob(config = {}) {
+  if (activeCvJob && activeCvJob.status === 'running') {
+    return {
+      success: false,
+      error: 'A computer vision analysis job is already in progress. Wait for it to finish or cancel it first.',
+    };
+  }
+
+  const {
+    inputDir,
+    reportPath: explicitReportPath,
+    customPythonPath,
+    maxHamming = 8,
+    spawnProcess: customSpawn,
+    pythonExe: customPythonExe,
+  } = config;
+
+  if (typeof inputDir !== 'string' || !inputDir.trim() || inputDir.includes('\0')) {
+    return { success: false, error: 'Invalid input image directory path argument.' };
+  }
+
+  const resolvedInputDir = path.normalize(path.resolve(inputDir.trim()));
+
+  // 1. Verify input directory exists, is a directory, and is not a symlink
+  try {
+    const stat = fs.lstatSync(resolvedInputDir);
+    if (stat.isSymbolicLink()) {
+      return { success: false, error: 'Input directory cannot be a symbolic link for security reasons.' };
+    }
+    if (!stat.isDirectory()) {
+      return { success: false, error: 'Specified input directory path is not a directory.' };
+    }
+  } catch (err) {
+    return { success: false, error: `Cannot access input directory: ${err.message}` };
+  }
+
+  // 2. Count image files
+  let imageFiles = [];
+  try {
+    const entries = fs.readdirSync(resolvedInputDir);
+    imageFiles = entries.filter((name) => {
+      const ext = path.extname(name).toLowerCase();
+      return SUPPORTED_IMAGE_EXTENSIONS.has(ext);
+    });
+  } catch (err) {
+    return { success: false, error: `Failed to read input directory: ${err.message}` };
+  }
+
+  if (imageFiles.length === 0) {
+    return {
+      success: false,
+      error: 'No supported photographs (.jpg, .jpeg, .png, .webp, .bmp, .tif) found in directory.',
+    };
+  }
+
+  const jobId = typeof config.jobId === 'string' && config.jobId.trim()
+    ? config.jobId.trim()
+    : `cv_${Date.now()}`;
+
+  // 3. Resolve report path
+  let resolvedReportPath = null;
+  if (explicitReportPath && typeof explicitReportPath === 'string' && explicitReportPath.trim() && !explicitReportPath.includes('\0')) {
+    resolvedReportPath = path.normalize(path.resolve(explicitReportPath.trim()));
+    const reportDir = path.dirname(resolvedReportPath);
+    try {
+      fs.mkdirSync(reportDir, { recursive: true });
+    } catch (err) {
+      return { success: false, error: `Cannot create report directory: ${err.message}` };
+    }
+  } else {
+    resolvedReportPath = path.join(os.tmpdir(), `aeromorph_cv_report_${jobId}.json`);
+  }
+
+  // 4. Resolve Python executable
+  let resolvedPythonExe = customPythonExe || null;
+  let pyVersion = null;
+
+  if (!resolvedPythonExe) {
+    if (customPythonPath && typeof customPythonPath === 'string' && customPythonPath.trim()) {
+      const validCustom = validateBinaryExecutable(customPythonPath, ALLOWED_PYTHON_NAMES);
+      if (!validCustom) {
+        return { success: false, error: `Configured Python executable "${customPythonPath}" was not found or is invalid.` };
+      }
+    }
+
+    const pyDetection = await detectPythonTool(customPythonPath);
+    if (!pyDetection.detected || !pyDetection.path) {
+      return {
+        success: false,
+        error: pyDetection.error || 'Python 3 interpreter was not detected. Please install Python 3.8+ or configure path.',
+      };
+    }
+    resolvedPythonExe = pyDetection.path;
+    pyVersion = pyDetection.version;
+  }
+
+  const pythonRoot = path.join(__dirname, '..', 'python');
+  let args;
+  try {
+    args = buildCvWorkerArgs({
+      inputDir: resolvedInputDir,
+      reportPath: resolvedReportPath,
+      jobId,
+      maxHamming,
+    });
+  } catch (argErr) {
+    return { success: false, error: argErr.message };
+  }
+
+  const spawnFn = typeof customSpawn === 'function' ? customSpawn : spawn;
+
+  activeCvJob = {
+    id: jobId,
+    status: 'running',
+    settled: false,
+    startTime: Date.now(),
+    endTime: null,
+    imageDir: resolvedInputDir,
+    reportPath: resolvedReportPath,
+    pythonExe: resolvedPythonExe,
+    currentProcess: null,
+    progress: { current: 0, total: imageFiles.length, percent: 0, currentFile: '' },
+    logs: [],
+    report: null,
+    error: null,
+  };
+
+  const logBuffer = activeCvJob.logs;
+
+  const appendCvLog = (category, msg) => {
+    const timeStr = new Date().toLocaleTimeString();
+    const entry = { time: timeStr, category, msg: msg.trim() };
+    logBuffer.push(entry);
+    if (logBuffer.length > 300) logBuffer.shift();
+    emitCvLog(entry);
+  };
+
+  appendCvLog('setup', `Starting Computer Vision Analysis for ${imageFiles.length} photos`);
+  appendCvLog('setup', `Python: ${resolvedPythonExe} (version: ${pyVersion || 'detected'})`);
+  appendCvLog('setup', `Report Destination: ${resolvedReportPath}`);
+
+  emitCvProgress({
+    jobId,
+    status: 'running',
+    settled: false,
+    progress: activeCvJob.progress,
+    elapsedMs: 0,
+    reportPath: resolvedReportPath,
+  });
+
+  let proc;
+  try {
+    proc = spawnFn(resolvedPythonExe, args, {
+      cwd: pythonRoot,
+      env: {
+        ...process.env,
+        PYTHONPATH: pythonRoot + (process.env.PYTHONPATH ? path.delimiter + process.env.PYTHONPATH : ''),
+        PYTHONIOENCODING: 'utf-8',
+      },
+      shell: false,
+      windowsHide: true,
+    });
+  } catch (spawnErr) {
+    activeCvJob.status = 'failed';
+    activeCvJob.settled = true;
+    activeCvJob.error = `Failed to spawn Python process: ${spawnErr.message}`;
+    return { success: false, error: activeCvJob.error };
+  }
+
+  activeCvJob.currentProcess = proc;
+
+  proc.stdout?.on('data', (chunk) => {
+    const lines = chunk.toString().split(/\r?\n/);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const progressMatch = line.match(/^\[PROGRESS\]\s+(\d+)\/(\d+)\s+\(([\d.]+)%\)\s*(.*)$/);
+      if (progressMatch) {
+        const current = parseInt(progressMatch[1], 10);
+        const total = parseInt(progressMatch[2], 10);
+        const percent = parseFloat(progressMatch[3]);
+        const currentFile = progressMatch[4].trim();
+
+        if (activeCvJob) {
+          activeCvJob.progress = { current, total, percent, currentFile };
+          emitCvProgress({
+            jobId,
+            status: activeCvJob.status,
+            settled: false,
+            progress: activeCvJob.progress,
+            elapsedMs: Date.now() - activeCvJob.startTime,
+          });
+        }
+      }
+      appendCvLog('worker', line);
+    }
+  });
+
+  proc.stderr?.on('data', (chunk) => {
+    const lines = chunk.toString().split(/\r?\n/);
+    for (const line of lines) {
+      if (line.trim()) {
+        appendCvLog('stderr', line);
+      }
+    }
+  });
+
+  proc.on('error', (err) => {
+    if (activeCvJob) {
+      activeCvJob.currentProcess = null;
+      activeCvJob.status = 'failed';
+      activeCvJob.settled = true;
+      activeCvJob.endTime = Date.now();
+      activeCvJob.error = `Process error: ${err.message}`;
+      appendCvLog('error', activeCvJob.error);
+      emitCvProgress({
+        jobId,
+        status: 'failed',
+        settled: true,
+        error: activeCvJob.error,
+        elapsedMs: activeCvJob.endTime - activeCvJob.startTime,
+      });
+    }
+  });
+
+  proc.on('close', (code, signal) => {
+    if (!activeCvJob) return;
+    activeCvJob.currentProcess = null;
+    activeCvJob.endTime = Date.now();
+    activeCvJob.settled = true;
+
+    if (activeCvJob.status === 'cancelled') {
+      appendCvLog('system', 'Analysis job was cancelled by user.');
+      emitCvProgress({
+        jobId,
+        status: 'cancelled',
+        settled: true,
+        error: 'Analysis cancelled by user.',
+        elapsedMs: activeCvJob.endTime - activeCvJob.startTime,
+      });
+      return;
+    }
+
+    if (code === 0) {
+      try {
+        const rawReport = fs.readFileSync(resolvedReportPath, 'utf8');
+        const parsedReport = JSON.parse(rawReport);
+        activeCvJob.status = 'completed';
+        activeCvJob.report = parsedReport;
+        activeCvJob.progress = {
+          current: activeCvJob.progress.total || imageFiles.length,
+          total: activeCvJob.progress.total || imageFiles.length,
+          percent: 100,
+          currentFile: '',
+        };
+        appendCvLog('system', '✓ Quality analysis completed. Report loaded successfully.');
+        emitCvProgress({
+          jobId,
+          status: 'completed',
+          settled: true,
+          report: parsedReport,
+          progress: activeCvJob.progress,
+          elapsedMs: activeCvJob.endTime - activeCvJob.startTime,
+          reportPath: resolvedReportPath,
+        });
+      } catch (readErr) {
+        activeCvJob.status = 'failed';
+        activeCvJob.error = `Analysis completed but failed to read report: ${readErr.message}`;
+        appendCvLog('error', activeCvJob.error);
+        emitCvProgress({
+          jobId,
+          status: 'failed',
+          settled: true,
+          error: activeCvJob.error,
+          elapsedMs: activeCvJob.endTime - activeCvJob.startTime,
+        });
+      }
+    } else {
+      activeCvJob.status = 'failed';
+      activeCvJob.error = `Computer vision worker exited with code ${code}${signal ? ` (${signal})` : ''}`;
+      appendCvLog('error', activeCvJob.error);
+      emitCvProgress({
+        jobId,
+        status: 'failed',
+        settled: true,
+        error: activeCvJob.error,
+        elapsedMs: activeCvJob.endTime - activeCvJob.startTime,
+      });
+    }
+  });
+
+  return {
+    success: true,
+    jobId,
+    imageDir: resolvedInputDir,
+    reportPath: resolvedReportPath,
+  };
+}
+
+/**
+ * Cancel active computer vision analysis job
+ */
+async function cancelCvAnalysisJob() {
+  if (!activeCvJob || activeCvJob.status !== 'running') {
+    return { canceled: false, message: 'No active computer vision job to cancel.' };
+  }
+
+  activeCvJob.status = 'cancelled';
+  activeCvJob.endTime = Date.now();
+  if (activeCvJob.currentProcess) {
+    terminateProcessTree(activeCvJob.currentProcess);
+  }
+
+  return { canceled: true };
+}
+
+/**
+ * Query active computer vision analysis job status snapshot
+ */
+function getCvAnalysisStatusJob() {
+  if (!activeCvJob) {
+    return { status: 'idle', settled: true, progress: null, report: null, logs: [] };
+  }
+
+  return {
+    id: activeCvJob.id,
+    status: activeCvJob.status,
+    settled: Boolean(activeCvJob.settled),
+    startTime: activeCvJob.startTime,
+    endTime: activeCvJob.endTime,
+    elapsedMs: activeCvJob.endTime
+      ? activeCvJob.endTime - activeCvJob.startTime
+      : Date.now() - activeCvJob.startTime,
+    imageDir: activeCvJob.imageDir,
+    reportPath: activeCvJob.reportPath,
+    progress: activeCvJob.progress,
+    report: activeCvJob.report,
+    error: activeCvJob.error,
+    logs: activeCvJob.logs.slice(-150),
+  };
+}
+
+/**
+ * Read and validate structured Computer Vision report from file
+ */
+function readCvReport(rawReportPath) {
+  if (typeof rawReportPath !== 'string' || !rawReportPath.trim() || rawReportPath.includes('\0')) {
+    return { success: false, error: 'Invalid report path argument.' };
+  }
+  const resolved = path.normalize(path.resolve(rawReportPath.trim()));
+  try {
+    const stat = fs.lstatSync(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return { success: false, error: 'Report path does not point to a regular file.' };
+    }
+    if (stat.size > 20 * 1024 * 1024) {
+      return { success: false, error: 'Report file exceeds maximum allowed size (20 MB).' };
+    }
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const parsed = JSON.parse(raw);
+    return { success: true, report: parsed, path: resolved };
+  } catch (err) {
+    return { success: false, error: `Failed to read report: ${err.message}` };
+  }
+}
+
+// ------------------------------------------------------------------------------
 // Secure IPC Handlers
 // ------------------------------------------------------------------------------
 
@@ -2240,6 +2854,98 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
   ipcMain.handle('reconstruction:getStatus', async () => {
     return getReconstructionStatusJob();
   });
+
+  /**
+   * 13. Sprint 7: Detect Python Toolchain
+   */
+  ipcMain.handle('system:detectPython', async (event, options = {}) => {
+    const customPath = typeof options?.customPythonPath === 'string' && !options.customPythonPath.includes('\0')
+      ? options.customPythonPath.trim()
+      : null;
+    return await detectPythonTool(customPath);
+  });
+
+  /**
+   * 14. Sprint 7: Select Python Executable Dialog
+   */
+  ipcMain.handle('dialog:selectPythonExecutable', async () => {
+    if (!mainWindow) return { canceled: true };
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Select Python Executable (python.exe or py.exe)',
+        properties: ['openFile', 'dontAddToRecent'],
+        filters: [
+          { name: 'Python Executable (python.exe; py.exe)', extensions: ['exe'] },
+          { name: 'All Executables (*.exe)', extensions: ['exe'] },
+        ],
+      });
+
+      if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+        return { canceled: true };
+      }
+
+      const selected = result.filePaths[0];
+      const valid = validateBinaryExecutable(selected, ALLOWED_PYTHON_NAMES);
+      if (!valid) {
+        return {
+          canceled: true,
+          error: 'Selected file is not an allowed Python executable (expected python.exe or py.exe).',
+        };
+      }
+
+      const queryResult = await queryPythonInfo(valid);
+      return {
+        canceled: false,
+        ...queryResult,
+      };
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting Python executable:', err);
+      return { canceled: true, error: err.message };
+    }
+  });
+
+  /**
+   * 15. Sprint 7: Start Computer Vision Analysis Job
+   */
+  ipcMain.handle('cv:startAnalysis', async (event, config = {}) => {
+    if (activeCvJob && activeCvJob.status === 'running') {
+      return {
+        success: false,
+        error: 'A computer vision analysis job is already in progress. Wait for it to finish or cancel it first.',
+      };
+    }
+
+    const sanitized = {
+      inputDir: typeof config?.inputDir === 'string' ? config.inputDir.trim() : '',
+      reportPath: typeof config?.reportPath === 'string' ? config.reportPath.trim() : null,
+      customPythonPath: typeof config?.customPythonPath === 'string' ? config.customPythonPath.trim() : null,
+      jobId: typeof config?.jobId === 'string' ? config.jobId.trim() : null,
+      maxHamming: typeof config?.maxHamming === 'number' ? config.maxHamming : 8,
+    };
+
+    return await startCvAnalysisJob(sanitized);
+  });
+
+  /**
+   * 16. Sprint 7: Cancel Active Computer Vision Job
+   */
+  ipcMain.handle('cv:cancelAnalysis', async () => {
+    return await cancelCvAnalysisJob();
+  });
+
+  /**
+   * 17. Sprint 7: Get Computer Vision Job Status
+   */
+  ipcMain.handle('cv:getStatus', async () => {
+    return getCvAnalysisStatusJob();
+  });
+
+  /**
+   * 18. Sprint 7: Read Computer Vision Report
+   */
+  ipcMain.handle('cv:readReport', async (event, reportPath) => {
+    return readCvReport(reportPath);
+  });
 }
 
 // ------------------------------------------------------------------------------
@@ -2299,5 +3005,17 @@ module.exports = {
   RUN_MANIFEST_FILENAME,
   _resetActiveReconstructionJobForTest: () => {
     activeReconstructionJob = null;
+  },
+  ALLOWED_PYTHON_NAMES,
+  getPythonCandidates,
+  queryPythonInfo,
+  detectPythonTool,
+  buildCvWorkerArgs,
+  startCvAnalysisJob,
+  cancelCvAnalysisJob,
+  getCvAnalysisStatusJob,
+  readCvReport,
+  _resetActiveCvJobForTest: () => {
+    activeCvJob = null;
   },
 };

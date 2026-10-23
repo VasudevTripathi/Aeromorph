@@ -18,7 +18,9 @@ import {
   RefreshCw,
   FileSearch,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Sparkles,
+  Play
 } from 'lucide-react';
 import {
   isElectron,
@@ -28,6 +30,13 @@ import {
   selectOpenMvsExecutable,
   validateImageDirectory,
   selectWorkspaceDirectory,
+  detectPython,
+  selectPythonExecutable,
+  startCvAnalysis,
+  cancelCvAnalysis,
+  getCvAnalysisStatus,
+  subscribeCvProgress,
+  subscribeCvLog,
 } from '../services/desktopBridge';
 import { getCustomToolPaths, saveCustomToolPaths } from '../services/projectService';
 
@@ -56,6 +65,27 @@ export default function ImportPhotographs({
   });
   const [isDetecting, setIsDetecting] = useState(false);
   const [folderValidation, setFolderValidation] = useState(null);
+
+  // Sprint 7: Python toolchain and Computer Vision analysis state
+  const [pythonState, setPythonState] = useState({
+    loading: true,
+    detected: false,
+    path: null,
+    version: null,
+    dependencies: { numpy: false, pillow: false, opencv: false },
+    environmentReady: false,
+    status: 'Checking...',
+    error: null,
+    warning: null,
+  });
+  const [cvJob, setCvJob] = useState({
+    running: false,
+    jobId: null,
+    progress: { current: 0, total: 0, percent: 0, currentFile: '' },
+    report: null,
+    error: null,
+  });
+  const [showFindingsDetails, setShowFindingsDetails] = useState(false);
 
   const folderInputRef = useRef(null);
   const filesInputRef = useRef(null);
@@ -97,24 +127,43 @@ export default function ImportPhotographs({
     };
   }, [sessionImages]);
 
-  // Load and refresh environment detection (Sprint 6A)
+  // Load and refresh environment detection (Sprint 6A + Sprint 7)
   const loadEnvironment = useCallback(async () => {
     setIsDetecting(true);
     try {
       const savedPaths = getCustomToolPaths();
-      const res = await detectEnvironment({
-        customColmapPath: savedPaths.colmapPath,
-        customOpenmvsPath: savedPaths.openmvsPath,
-      });
+      const [res, pyRes] = await Promise.all([
+        detectEnvironment({
+          customColmapPath: savedPaths.colmapPath,
+          customOpenmvsPath: savedPaths.openmvsPath,
+        }),
+        detectPython({
+          customPythonPath: savedPaths.pythonPath,
+        }),
+      ]);
+
       setEnvState({
         loading: false,
         colmap: res.colmap || { detected: false, status: 'Not Detected' },
         openmvs: res.openmvs || { detected: false, status: 'Not Detected' },
         environmentReady: Boolean(res.environmentReady),
       });
+
+      setPythonState({
+        loading: false,
+        detected: Boolean(pyRes?.detected),
+        path: pyRes?.path || null,
+        version: pyRes?.version || null,
+        dependencies: pyRes?.dependencies || {},
+        environmentReady: Boolean(pyRes?.environmentReady),
+        status: pyRes?.status || (pyRes?.detected ? 'Ready' : 'Not Detected'),
+        error: pyRes?.error || null,
+        warning: pyRes?.warning || null,
+      });
     } catch (err) {
       console.error('Environment check failed:', err);
       setEnvState((prev) => ({ ...prev, loading: false }));
+      setPythonState((prev) => ({ ...prev, loading: false }));
     } finally {
       setIsDetecting(false);
     }
@@ -124,6 +173,22 @@ export default function ImportPhotographs({
   useEffect(() => {
     loadEnvironment();
   }, [loadEnvironment]);
+
+  // Subscribe to live CV progress updates (Sprint 7)
+  useEffect(() => {
+    const unsubscribe = subscribeCvProgress((progressData) => {
+      if (!progressData) return;
+      setCvJob((prev) => ({
+        ...prev,
+        running: progressData.status === 'running',
+        jobId: progressData.jobId || prev.jobId,
+        progress: progressData.progress || prev.progress,
+        report: progressData.report || prev.report,
+        error: progressData.status === 'failed' ? progressData.error : (progressData.status === 'cancelled' ? 'Analysis cancelled by user.' : null),
+      }));
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Validate active project source directory on project change or directory update
   useEffect(() => {
@@ -178,6 +243,57 @@ export default function ImportPhotographs({
     if (result.path) {
       saveCustomToolPaths({ openmvsPath: result.path });
       loadEnvironment();
+    }
+  };
+
+  // Handle selecting custom python.exe
+  const handleSelectPythonPath = async () => {
+    const result = await selectPythonExecutable();
+    if (result.canceled) return;
+    if (result.error) {
+      alert(`Python selection error: ${result.error}`);
+      return;
+    }
+    if (result.path) {
+      saveCustomToolPaths({ pythonPath: result.path });
+      loadEnvironment();
+    }
+  };
+
+  // Handle starting CV quality analysis
+  const handleStartAnalysis = async () => {
+    const dirPath = currentProject?.sourceDirectoryReference?.path;
+    if (!dirPath) {
+      alert('Please attach a native photograph folder first.');
+      return;
+    }
+    const savedPaths = getCustomToolPaths();
+    setCvJob((prev) => ({
+      ...prev,
+      running: true,
+      error: null,
+      progress: { current: 0, total: currentProject?.sourceDirectoryReference?.fileCount || 0, percent: 0, currentFile: 'Starting...' },
+    }));
+    try {
+      const res = await startCvAnalysis({
+        inputDir: dirPath,
+        customPythonPath: savedPaths.pythonPath,
+      });
+      if (!res.success) {
+        setCvJob((prev) => ({ ...prev, running: false, error: res.error }));
+      }
+    } catch (err) {
+      setCvJob((prev) => ({ ...prev, running: false, error: err.message }));
+    }
+  };
+
+  // Handle cancelling CV quality analysis
+  const handleCancelAnalysis = async () => {
+    try {
+      await cancelCvAnalysis();
+      setCvJob((prev) => ({ ...prev, running: false }));
+    } catch (err) {
+      console.warn('Failed to cancel CV analysis:', err);
     }
   };
 
@@ -588,6 +704,94 @@ export default function ImportPhotographs({
               </button>
             )}
           </div>
+
+          {/* Python 3 Status (Sprint 7) */}
+          <div style={{ background: 'var(--bg-secondary)', padding: '10px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                <span className={`status-dot ${pythonState.detected ? 'online' : 'idle'}`} />
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Python 3 (CV Pre-flight)
+                </span>
+              </div>
+              <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: pythonState.detected ? 'var(--accent)' : 'var(--text-muted)' }}>
+                {pythonState.version ? `v${pythonState.version}` : (pythonState.detected ? 'Detected' : 'Missing')}
+              </span>
+            </div>
+
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={pythonState.path || pythonState.error}>
+              {pythonState.path ? (
+                <code style={{ fontFamily: 'var(--font-mono)', fontSize: '10.5px' }}>{pythonState.path}</code>
+              ) : (
+                <span style={{ color: 'var(--color-warning)' }}>{pythonState.error || 'python.exe not found'}</span>
+              )}
+            </div>
+
+            {pythonState.warning && (
+              <div style={{ fontSize: '10.5px', color: 'var(--color-warning)', marginBottom: '8px', background: 'rgba(234, 179, 8, 0.1)', padding: '4px 8px', borderRadius: '4px' }}>
+                ⚠ {pythonState.warning}
+              </div>
+            )}
+
+            {pythonState.dependencies && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontFamily: 'var(--font-mono)',
+                    padding: '2px 5px',
+                    borderRadius: '3px',
+                    background: pythonState.dependencies.numpy ? 'rgba(213, 255, 101, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                    color: pythonState.dependencies.numpy ? 'var(--accent)' : 'var(--text-muted)',
+                    border: `1px solid ${pythonState.dependencies.numpy ? 'rgba(213, 255, 101, 0.25)' : 'var(--border-subtle)'}`,
+                  }}
+                  title={pythonState.dependencies.numpy ? `NumPy v${pythonState.dependencies.numpy}` : 'NumPy not installed'}
+                >
+                  {pythonState.dependencies.numpy ? '✓ NumPy' : '✗ NumPy'}
+                </span>
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontFamily: 'var(--font-mono)',
+                    padding: '2px 5px',
+                    borderRadius: '3px',
+                    background: pythonState.dependencies.pillow ? 'rgba(213, 255, 101, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                    color: pythonState.dependencies.pillow ? 'var(--accent)' : 'var(--text-muted)',
+                    border: `1px solid ${pythonState.dependencies.pillow ? 'rgba(213, 255, 101, 0.25)' : 'var(--border-subtle)'}`,
+                  }}
+                  title={pythonState.dependencies.pillow ? `Pillow v${pythonState.dependencies.pillow}` : 'Pillow not installed (NumPy BMP fallback active)'}
+                >
+                  {pythonState.dependencies.pillow ? '✓ Pillow' : '✗ Pillow'}
+                </span>
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontFamily: 'var(--font-mono)',
+                    padding: '2px 5px',
+                    borderRadius: '3px',
+                    background: pythonState.dependencies.opencv ? 'rgba(213, 255, 101, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                    color: pythonState.dependencies.opencv ? 'var(--accent)' : 'var(--text-muted)',
+                    border: `1px solid ${pythonState.dependencies.opencv ? 'rgba(213, 255, 101, 0.25)' : 'var(--border-subtle)'}`,
+                  }}
+                  title={pythonState.dependencies.opencv ? `OpenCV v${pythonState.dependencies.opencv}` : 'OpenCV optional (ORB features skipped when absent)'}
+                >
+                  {pythonState.dependencies.opencv ? '✓ OpenCV' : '○ OpenCV (opt)'}
+                </span>
+              </div>
+            )}
+
+            {isElectron && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={handleSelectPythonPath}
+                style={{ width: '100%', fontSize: '11px', padding: '4px 8px', justifyContent: 'center' }}
+              >
+                <FileSearch size={12} />
+                <span>{pythonState.detected ? 'Change python.exe Path...' : 'Locate python.exe...'}</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Pipeline Readiness Disclaimer */}
@@ -819,6 +1023,232 @@ export default function ImportPhotographs({
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Sprint 7: Computer Vision Pre-flight Quality Analysis Card */}
+      {isNativeDirectoryAttached && hasAttachedImages && (
+        <div className="glass-panel" style={{ padding: '14px 18px', marginTop: '12px', marginBottom: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Sparkles size={16} color="var(--accent)" />
+              <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                Computer Vision Pre-flight Analysis (Sprint 7)
+              </span>
+              {cvJob.running ? (
+                <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.15)', color: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                  Analyzing... {Math.round(cvJob.progress.percent)}%
+                </span>
+              ) : cvJob.report?.dataset_readiness?.recommendation === 'ready' ? (
+                <span className="live-indicator-tag" style={{ background: 'var(--color-success-dim)', color: 'var(--color-success)', borderColor: 'rgba(103, 232, 160, 0.3)' }}>
+                  <CheckCircle2 size={11} style={{ marginRight: '4px' }} /> Dataset Ready
+                </span>
+              ) : cvJob.report?.dataset_readiness?.recommendation === 'ready_with_warnings' ? (
+                <span className="sample-indicator-tag" style={{ background: 'var(--color-warning-dim)', color: 'var(--color-warning)', borderColor: 'rgba(255, 179, 64, 0.3)' }}>
+                  <AlertTriangle size={11} style={{ marginRight: '4px' }} /> Usable with Warnings
+                </span>
+              ) : cvJob.report?.dataset_readiness?.recommendation === 'needs_attention' ? (
+                <span className="sample-indicator-tag" style={{ background: 'var(--color-error-dim)', color: 'var(--color-error)', borderColor: 'rgba(255, 94, 94, 0.3)' }}>
+                  <ShieldAlert size={11} style={{ marginRight: '4px' }} /> Needs Attention
+                </span>
+              ) : (
+                <span className="sample-indicator-tag" style={{ color: 'var(--text-muted)', borderColor: 'var(--border-subtle)' }}>
+                  Not Evaluated
+                </span>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {cvJob.running ? (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleCancelAnalysis}
+                  style={{ color: 'var(--color-error)', borderColor: 'var(--color-error-dim)', fontSize: '11.5px', padding: '4px 10px' }}
+                >
+                  <RotateCcw size={12} />
+                  <span>Cancel Analysis</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={cvJob.report ? 'btn-secondary' : 'btn-primary'}
+                  onClick={handleStartAnalysis}
+                  disabled={!pythonState.detected}
+                  style={{ fontSize: '11.5px', padding: '5px 12px', gap: '6px' }}
+                  title={!pythonState.detected ? 'Python 3.8+ required for quality analysis' : 'Analyze image sharpness, blur, exposure, and perceptual near-duplicates'}
+                >
+                  <Play size={12} />
+                  <span>{cvJob.report ? 'Re-analyze Photographs' : 'Analyze Photograph Quality'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Missing Python Notice */}
+          {!pythonState.detected && (
+            <div style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid var(--color-warning-dim)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '9px', fontSize: '11.5px', color: 'var(--color-warning)' }}>
+                <AlertCircle size={15} />
+                <span>
+                  <strong>Python Setup Required:</strong> Python 3.8+ is required to execute local computer vision pre-flight checks (blur, exposure, duplicate detection). Photogrammetry reconstruction can still proceed directly if COLMAP is configured.
+                </span>
+              </div>
+              {isElectron && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={handleSelectPythonPath}
+                  style={{ fontSize: '11px', padding: '4px 8px' }}
+                >
+                  <FileSearch size={12} />
+                  <span>Locate python.exe...</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Running Progress Bar */}
+          {cvJob.running && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                <span>Scanning photo {cvJob.progress.current} of {cvJob.progress.total} {cvJob.progress.currentFile ? `(${cvJob.progress.currentFile})` : ''}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{Math.round(cvJob.progress.percent)}%</span>
+              </div>
+              <div style={{ width: '100%', height: '6px', background: 'var(--bg-secondary)', borderRadius: '3px', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${Math.max(2, Math.min(100, cvJob.progress.percent))}%`,
+                    height: '100%',
+                    background: 'var(--accent)',
+                    borderRadius: '3px',
+                    transition: 'width 0.2s ease',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Error Message */}
+          {cvJob.error && (
+            <div style={{ background: 'var(--color-error-dim)', border: '1px solid rgba(255, 94, 94, 0.3)', borderRadius: 'var(--radius-sm)', padding: '8px 12px', fontSize: '11.5px', color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <AlertCircle size={14} />
+              <span>{cvJob.error}</span>
+            </div>
+          )}
+
+          {/* Structured Analysis Results */}
+          {cvJob.report && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {/* Stat Tiles Grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                <div style={{ background: 'var(--bg-secondary)', padding: '8px 10px', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Images Scanned</div>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px' }}>
+                    {cvJob.report.dataset_summary?.total_images_scanned ?? 0}
+                  </div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    {cvJob.report.dataset_summary?.acceptable_images_count ?? 0} acceptable
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '8px 10px', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Unreadable</div>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: cvJob.report.dataset_summary?.unreadable_images_count > 0 ? 'var(--color-error)' : 'var(--color-success)', marginTop: '2px' }}>
+                    {cvJob.report.dataset_summary?.unreadable_images_count ?? 0}
+                  </div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    {cvJob.report.dataset_summary?.unreadable_images_count === 0 ? 'All readable' : 'Corrupted / decode error'}
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '8px 10px', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Blur Warnings</div>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: cvJob.report.dataset_summary?.blur_warnings_count > 0 ? 'var(--color-warning)' : 'var(--color-success)', marginTop: '2px' }}>
+                    {cvJob.report.dataset_summary?.blur_warnings_count ?? 0}
+                  </div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    Laplacian variance &lt; 100
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '8px 10px', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Exposure Warnings</div>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: cvJob.report.dataset_summary?.exposure_warnings_count > 0 ? 'var(--color-warning)' : 'var(--color-success)', marginTop: '2px' }}>
+                    {cvJob.report.dataset_summary?.exposure_warnings_count ?? 0}
+                  </div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    Under/over-exposed
+                  </div>
+                </div>
+
+                <div style={{ background: 'var(--bg-secondary)', padding: '8px 10px', borderRadius: 'var(--radius-xs)', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Near-Duplicates</div>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: cvJob.report.dataset_summary?.likely_duplicate_pairs_count > 0 ? 'var(--color-warning)' : 'var(--accent)', marginTop: '2px' }}>
+                    {cvJob.report.dataset_summary?.likely_duplicate_pairs_count ?? 0}
+                  </div>
+                  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                    {cvJob.report.dataset_summary?.duplicate_clusters_count ?? 0} cluster(s) detected
+                  </div>
+                </div>
+              </div>
+
+              {/* Dataset Readiness Summary & Disclaimer */}
+              <div style={{ background: 'rgba(0, 0, 0, 0.25)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)', padding: '10px 14px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-primary)', fontWeight: 500, marginBottom: '4px' }}>
+                  {cvJob.report.dataset_readiness?.summary}
+                </div>
+                {cvJob.report.dataset_readiness?.recommendations?.length > 0 && (
+                  <ul style={{ margin: '6px 0 0 16px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                    {cvJob.report.dataset_readiness.recommendations.map((rec, i) => (
+                      <li key={i} style={{ marginBottom: '2px' }}>{rec}</li>
+                    ))}
+                  </ul>
+                )}
+                <div style={{ fontSize: '10.5px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '6px', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px' }}>
+                  ⚠ Notice: Quality heuristics evaluate photograph sharpness, exposure balance, and near-duplication. Successful 3D reconstruction also requires consistent scene parallax, texture, and continuous viewpoint coverage (60–80% overlap).
+                </div>
+              </div>
+
+              {/* Toggle Details Accordion */}
+              {((cvJob.report.image_findings && cvJob.report.image_findings.some(f => f.has_issues)) || (cvJob.report.duplicate_detection?.likely_duplicate_pairs?.length > 0)) && (
+                <div>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => setShowFindingsDetails(!showFindingsDetails)}
+                    style={{ fontSize: '11px', padding: '3px 8px', gap: '4px' }}
+                  >
+                    <span>{showFindingsDetails ? 'Hide Detailed Flagged Images' : 'View Flagged Images & Duplicate Pairs'}</span>
+                  </button>
+
+                  {showFindingsDetails && (
+                    <div style={{ marginTop: '8px', maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {cvJob.report.image_findings?.filter(f => f.has_issues).map((f, idx) => (
+                        <div key={idx} style={{ background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-xs)', fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{f.filename}</span>
+                          <span style={{ color: 'var(--color-warning)', fontSize: '10.5px' }}>
+                            {f.issues?.map(iss => iss.message).join('; ') || 'Flagged'}
+                          </span>
+                        </div>
+                      ))}
+
+                      {cvJob.report.duplicate_detection?.likely_duplicate_pairs?.map((pair, idx) => (
+                        <div key={`dup-${idx}`} style={{ background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-xs)', fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                            Near-duplicate: {pair.image1} ↔ {pair.image2}
+                          </span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '10.5px' }}>
+                            dHash distance: {pair.hamming_distance}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -323,3 +323,155 @@ export function subscribeReconstructionLog(callback) {
   }
   return () => {};
 }
+
+/**
+ * Detect local Python 3 environment and verify CV dependencies (Sprint 7)
+ * @param {Object} options - Optional { customPythonPath?: string }
+ * @returns {Promise<{ detected: boolean, path?: string, version?: string, dependencies?: Object, environmentReady: boolean, status: string, error?: string }>}
+ */
+export async function detectPython(options = {}) {
+  if (isElectron && window.aeromorphAPI?.detectPython) {
+    try {
+      return await window.aeromorphAPI.detectPython(options);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Python detection error:', err);
+      return {
+        detected: false,
+        path: null,
+        version: null,
+        dependencies: { numpy: false, pillow: false, opencv: false },
+        environmentReady: false,
+        status: 'Detection Error',
+        error: err.message,
+      };
+    }
+  }
+
+  return {
+    detected: false,
+    path: null,
+    version: null,
+    dependencies: { numpy: false, pillow: false, opencv: false },
+    environmentReady: false,
+    status: 'Browser Sandbox',
+    error: 'Python environment detection requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Prompt user to select Python executable via native file dialog
+ * @returns {Promise<{ canceled: boolean, path?: string, version?: string, error?: string }>}
+ */
+export async function selectPythonExecutable() {
+  if (isElectron && window.aeromorphAPI?.selectPythonExecutable) {
+    try {
+      return await window.aeromorphAPI.selectPythonExecutable();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Error selecting Python executable:', err);
+      return { canceled: true, error: err.message };
+    }
+  }
+
+  return {
+    canceled: true,
+    error: 'Executable selection requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Start Computer Vision Image Quality Analysis Worker (Sprint 7)
+ * @param {Object} config - { inputDir: string, reportPath?: string, customPythonPath?: string, maxHamming?: number }
+ * @returns {Promise<{ success: boolean, jobId?: string, reportPath?: string, error?: string }>}
+ */
+export async function startCvAnalysis(config) {
+  if (isElectron && window.aeromorphAPI?.startCvAnalysis) {
+    try {
+      return await window.aeromorphAPI.startCvAnalysis(config);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to start computer vision analysis:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return {
+    success: false,
+    error: 'Computer vision analysis requires the Aeromorph Desktop application.',
+  };
+}
+
+/**
+ * Cancel active Computer Vision Analysis Worker
+ * @returns {Promise<{ canceled: boolean, message?: string }>}
+ */
+export async function cancelCvAnalysis() {
+  if (isElectron && window.aeromorphAPI?.cancelCvAnalysis) {
+    try {
+      return await window.aeromorphAPI.cancelCvAnalysis();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to cancel computer vision analysis:', err);
+      return { canceled: false, error: err.message };
+    }
+  }
+
+  return { canceled: false, error: 'Analysis cancellation requires the Aeromorph Desktop application.' };
+}
+
+/**
+ * Get active Computer Vision Analysis Worker status, progress, and report
+ * @returns {Promise<{ id?: string, status: string, settled?: boolean, progress?: Object, report?: Object, logs: Array }>}
+ */
+export async function getCvAnalysisStatus() {
+  if (isElectron && window.aeromorphAPI?.getCvAnalysisStatus) {
+    try {
+      return await window.aeromorphAPI.getCvAnalysisStatus();
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to get analysis status:', err);
+      return { status: 'idle', logs: [] };
+    }
+  }
+
+  return { status: 'idle', logs: [] };
+}
+
+/**
+ * Read structured Computer Vision JSON report from validated path
+ * @param {string} reportPath - Path to report file
+ * @returns {Promise<{ success: boolean, report?: Object, error?: string }>}
+ */
+export async function readCvReport(reportPath) {
+  if (isElectron && window.aeromorphAPI?.readCvReport) {
+    try {
+      return await window.aeromorphAPI.readCvReport(reportPath);
+    } catch (err) {
+      console.error('Aeromorph Desktop: Failed to read report:', err);
+      return { success: false, error: err.message };
+    }
+  }
+
+  return { success: false, error: 'Report reading requires the Aeromorph Desktop application.' };
+}
+
+/**
+ * Subscribe to computer vision progress events
+ * @param {Function} callback - (progressData) => void
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeCvProgress(callback) {
+  if (isElectron && window.aeromorphAPI?.onCvProgress) {
+    return window.aeromorphAPI.onCvProgress(callback);
+  }
+  return () => {};
+}
+
+/**
+ * Subscribe to computer vision log streaming events
+ * @param {Function} callback - (logEntry) => void
+ * @returns {Function} Unsubscribe function
+ */
+export function subscribeCvLog(callback) {
+  if (isElectron && window.aeromorphAPI?.onCvLog) {
+    return window.aeromorphAPI.onCvLog(callback);
+  }
+  return () => {};
+}
+
