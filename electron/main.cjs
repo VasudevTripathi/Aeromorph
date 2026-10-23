@@ -1943,6 +1943,16 @@ async function startSparseReconstructionJob(config = {}) {
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         return resolve({ cancelled: true });
       }
+
+      // Record any pre-existing .log files in runDir
+      const initialLogs = new Set();
+      try {
+        const existing = fs.readdirSync(runDir);
+        for (const f of existing) {
+          if (f.endsWith('.log')) initialLogs.add(f);
+        }
+      } catch {}
+
       let proc;
       try {
         proc = spawnFn(exe, args, {
@@ -1986,10 +1996,37 @@ async function startSparseReconstructionJob(config = {}) {
         if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
           return resolve({ cancelled: true });
         }
+
+        // Check for OpenMVS-generated .log files and extract output/errors
+        let extractedErrorDetail = '';
+        try {
+          const files = fs.readdirSync(runDir);
+          for (const f of files) {
+            if (f.endsWith('.log') && !initialLogs.has(f) && f !== 'aeromorph_colmap.log') {
+              const fullLogPath = path.join(runDir, f);
+              try {
+                const logText = fs.readFileSync(fullLogPath, 'utf8');
+                const logLines = logText.split(/\r?\n/);
+                for (const line of logLines) {
+                  const trimmed = line.trim();
+                  if (trimmed) {
+                    appendJobLog(stageKey, trimmed);
+                    if (/error:|fatal:/i.test(trimmed)) {
+                      extractedErrorDetail = trimmed;
+                    }
+                  }
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+
         if (code === 0) {
           return resolve({ code });
         }
-        reject(new Error(`Stage ${stageKey} failed with exit code ${code}${signal ? ` (${signal})` : ''}`));
+
+        const detailMsg = extractedErrorDetail ? `: ${extractedErrorDetail}` : '';
+        reject(new Error(`Stage ${stageKey} failed with exit code ${code}${signal ? ` (${signal})` : ''}${detailMsg}`));
       });
     });
   };
@@ -2199,8 +2236,22 @@ async function startSparseReconstructionJob(config = {}) {
         try { fs.unlinkSync(scenePath); } catch {}
       }
 
+      // OpenMVS InterfaceCOLMAP requires the input directory to contain a 'sparse' subfolder
+      // containing cameras, images, and points3D files.
+      const omvsInputDir = path.join(runDir, 'omvs_input');
+      const omvsSparseDir = path.join(omvsInputDir, 'sparse');
+      fs.mkdirSync(omvsSparseDir, { recursive: true });
+
+      const colmapModelFiles = ['cameras.bin', 'images.bin', 'points3D.bin', 'cameras.txt', 'images.txt', 'points3D.txt'];
+      for (const fname of colmapModelFiles) {
+        const src = path.join(verifyRes.modelDir, fname);
+        if (fs.existsSync(src)) {
+          fs.copyFileSync(src, path.join(omvsSparseDir, fname));
+        }
+      }
+
       const interfaceArgs = buildOpenMvsStageArgs('interface_colmap', {
-        colmapModelDir: verifyRes.modelDir,
+        colmapModelDir: omvsInputDir,
         scenePath,
         imageDir: dirCheck.imageDir,
         numThreads,

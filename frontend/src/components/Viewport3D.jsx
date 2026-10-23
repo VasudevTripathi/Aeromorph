@@ -27,13 +27,42 @@ export default function Viewport3D({
   sessionModelFile = null,
   onAttachModelFile,
   onAttachNativePly,
+  jobStatus = 'idle',
+  activeStageKey = null,
+  activeStageLabel = null,
+  stageIndex = 1,
+  totalStages = 6,
+  elapsedSeconds = 0,
+  errorMessage = null,
+  onRetryPipeline = null,
+  onClearError = null,
 }) {
   // Viewport UI States
-  const [viewportState, setViewportState] = useState('loaded'); // 'loaded' | 'loading' | 'empty' | 'error'
+  const [manualViewOverride, setManualViewOverride] = useState(null); // null (auto) | 'loaded' | 'loading' | 'empty' | 'error'
   const [renderMode, setRenderMode] = useState('shaded'); // 'shaded' | 'wireframe' | 'points'
   const [lightingMode, setLightingMode] = useState('studio'); // 'studio' | 'flat'
   const [interactionMode, setInteractionMode] = useState('orbit'); // 'orbit' | 'pan'
   const [webglError, setWebglError] = useState(null);
+
+  // Automatically sync viewport state with live pipeline execution unless manually overridden
+  const effectiveState = manualViewOverride || (
+    jobStatus === 'running'
+      ? 'loading'
+      : (errorMessage ? 'error' : 'loaded')
+  );
+
+  // When a new job begins running, reset any manual override so user views live pipeline progress
+  useEffect(() => {
+    if (jobStatus === 'running') {
+      setManualViewOverride(null);
+    }
+  }, [jobStatus]);
+
+  const formatElapsed = (sec) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}m ${String(s).padStart(2, '0')}s`;
+  };
 
   // PLY Model Loading States
   const [isLoadingPly, setIsLoadingPly] = useState(false);
@@ -885,32 +914,48 @@ export default function Viewport3D({
         <span className="state-switcher-label">View:</span>
         <button
           type="button"
-          className={`state-pill-btn ${viewportState === 'loaded' ? 'active' : ''}`}
-          onClick={() => setViewportState('loaded')}
+          className={`state-pill-btn ${effectiveState === 'loaded' ? 'active' : ''}`}
+          onClick={() => setManualViewOverride('loaded')}
+          title="Display loaded 3D geometry"
         >
           Model Loaded
         </button>
         <button
           type="button"
-          className={`state-pill-btn ${viewportState === 'loading' ? 'active' : ''}`}
-          onClick={() => setViewportState('loading')}
+          className={`state-pill-btn ${effectiveState === 'loading' ? 'active' : ''}`}
+          onClick={() => setManualViewOverride('loading')}
+          title={jobStatus === 'running' ? `Active: ${activeStageLabel || 'Reconstructing'}` : 'Inspect processing progress view'}
         >
-          Processing
+          {jobStatus === 'running' ? 'Processing (Live)' : 'Processing'}
         </button>
         <button
           type="button"
-          className={`state-pill-btn ${viewportState === 'empty' ? 'active' : ''}`}
-          onClick={() => setViewportState('empty')}
+          className={`state-pill-btn ${effectiveState === 'empty' ? 'active' : ''}`}
+          onClick={() => setManualViewOverride('empty')}
+          title="Inspect empty viewport state"
         >
           Empty Viewport
         </button>
         <button
           type="button"
-          className={`state-pill-btn ${viewportState === 'error' ? 'active' : ''}`}
-          onClick={() => setViewportState('error')}
+          className={`state-pill-btn ${effectiveState === 'error' ? 'active' : ''}`}
+          onClick={() => setManualViewOverride('error')}
+          title={errorMessage ? `Active Error: ${errorMessage}` : 'Inspect pipeline error state'}
         >
-          Error State
+          {errorMessage ? 'Error State (Active)' : 'Error State'}
         </button>
+
+        {manualViewOverride !== null && (
+          <button
+            type="button"
+            className="state-pill-btn"
+            style={{ fontSize: '10px', color: 'var(--accent)', borderColor: 'rgba(213, 255, 101, 0.3)' }}
+            onClick={() => setManualViewOverride(null)}
+            title="Reset to automatic mode synced with real pipeline status"
+          >
+            Auto Sync
+          </button>
+        )}
 
         <div className="toolbar-separator" style={{ height: '14px', margin: '0 2px' }} />
 
@@ -950,7 +995,7 @@ export default function Viewport3D({
       </div>
 
       {/* Floating Telemetry HUD (Top-Right) — Realtime Measured Three.js Metrics */}
-      {viewportState === 'loaded' && !webglError && (
+      {effectiveState === 'loaded' && !webglError && (
         <div className="viewport-hud-top-right">
           <div className="hud-badge-row">
             <span className="hud-label-dim" title={currentProject ? currentProject.name : ''}>
@@ -1032,7 +1077,7 @@ export default function Viewport3D({
           ref={canvasContainerRef}
           className="viewport-three-container"
           style={{
-            display: viewportState === 'loaded' && !webglError ? 'block' : 'none',
+            display: effectiveState === 'loaded' && !webglError ? 'block' : 'none',
           }}
         />
 
@@ -1100,36 +1145,53 @@ export default function Viewport3D({
           </div>
         )}
 
-        {/* View State: Model Loading / In Progress (Simulated Pipeline) */}
-        {viewportState === 'loading' && (
-          <div className="viewport-state-overlay">
-            <Loader2 size={32} color="var(--accent)" className="animate-spin" style={{ animation: 'spin 2s linear infinite' }} />
+        {/* View State: Realtime Reconstruction Progress */}
+        {effectiveState === 'loading' && (
+          <div className="viewport-state-overlay" style={{ minWidth: '380px' }}>
+            <Loader2 size={32} color="var(--accent)" className="animate-spin" style={{ animation: 'spin 1.6s linear infinite' }} />
             <div>
-              <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-                Reconstructing Mesh Geometry (Simulated)
+              <h3 style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
+                {jobStatus === 'running'
+                  ? (activeStageLabel || 'Reconstruction in Progress')
+                  : 'Pipeline Processing View'}
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                OpenMVS Delaunay Tetrahedralization • Step 5 of 6
+                {jobStatus === 'running'
+                  ? `Active Stage: ${activeStageKey || 'executing'} • Step ${stageIndex} of ${totalStages}`
+                  : 'No reconstruction job is actively running right now.'}
               </p>
             </div>
 
-            <div className="state-progress-bar-container">
-              <div className="state-progress-bar-fill" style={{ width: '84%' }} />
-            </div>
+            {jobStatus === 'running' && (
+              <>
+                <div className="state-progress-bar-container">
+                  <div
+                    className="state-progress-bar-fill"
+                    style={{
+                      width: `${Math.min(95, Math.max(10, Math.round(((stageIndex - 1 + 0.3) / totalStages) * 100)))}%`,
+                    }}
+                  />
+                </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', fontSize: '11px', color: 'var(--text-muted)' }}>
-              <span>Delaunay cells: 42.8M (Simulated)</span>
-              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>84%</span>
-            </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', fontSize: '11px', color: 'var(--text-muted)' }}>
+                  <span>Elapsed: {formatElapsed(elapsedSeconds)}</span>
+                  <span style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                    {`${Math.min(95, Math.max(10, Math.round(((stageIndex - 1 + 0.3) / totalStages) * 100)))}%`}
+                  </span>
+                </div>
+              </>
+            )}
 
-            <span style={{ fontSize: '10.5px', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-              Illustrative state — Real pipeline execution connects in future sprint
+            <span style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+              {jobStatus === 'running'
+                ? 'Processing locally on CPU with conservative memory bounds (8 GB RAM profile)'
+                : 'Click "Start Reconstruction" in the studio sidebar to start processing photographs.'}
             </span>
           </div>
         )}
 
         {/* View State: Empty Viewport */}
-        {viewportState === 'empty' && (
+        {effectiveState === 'empty' && (
           <div className="viewport-state-overlay">
             <div className="empty-icon-bubble">
               <Box size={24} strokeWidth={1.8} />
@@ -1139,7 +1201,7 @@ export default function Viewport3D({
                 No 3D Model Loaded
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                Select a local PLY mesh file or open a saved reconstruction project to view 3D geometry.
+                Select a local PLY mesh file or run a reconstruction pipeline to generate 3D geometry.
               </p>
             </div>
             <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
@@ -1151,33 +1213,74 @@ export default function Viewport3D({
           </div>
         )}
 
-        {/* View State: Pipeline Error (Illustrative) */}
-        {viewportState === 'error' && (
-          <div className="viewport-state-overlay" style={{ borderColor: 'var(--color-error-dim)' }}>
+        {/* View State: Pipeline Error */}
+        {effectiveState === 'error' && (
+          <div className="viewport-state-overlay" style={{ borderColor: 'var(--color-error-dim)', maxWidth: '460px' }}>
             <div className="empty-icon-bubble" style={{ background: 'var(--color-error-dim)', color: 'var(--color-error)' }}>
               <AlertTriangle size={24} strokeWidth={1.8} />
             </div>
             <div>
               <h3 style={{ fontSize: '14.5px', fontWeight: 600, color: 'var(--color-error)', letterSpacing: '-0.01em' }}>
-                Reconstruction Halted (Sample Error State)
+                {errorMessage ? 'Reconstruction Halted' : 'No Pipeline Errors'}
               </h3>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                COLMAP Feature Matcher registered &lt; 30 matching pairs between adjacent viewpoints.
+                {errorMessage
+                  ? 'A pipeline stage encountered an error during execution:'
+                  : 'The reconstruction pipeline has no active errors recorded.'}
               </p>
             </div>
-            <div style={{ background: 'rgba(0, 0, 0, 0.45)', padding: '6px 10px', borderRadius: 'var(--radius-xs)', fontSize: '10.5px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-              Error Code: ERR_COLMAP_MATCH_BELOW_THRESHOLD (Sample)
+
+            {errorMessage ? (
+              <div
+                style={{
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                  padding: '8px 12px',
+                  borderRadius: 'var(--radius-xs)',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-mono)',
+                  color: 'var(--color-error, #f87171)',
+                  width: '100%',
+                  wordBreak: 'break-word',
+                  maxHeight: '110px',
+                  overflowY: 'auto',
+                  textAlign: 'left',
+                }}
+              >
+                {errorMessage}
+              </div>
+            ) : (
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                If any stage fails during execution, full diagnostic logs and exit codes will display here.
+              </span>
+            )}
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              {onRetryPipeline && (
+                <button type="button" className="btn-primary" onClick={onRetryPipeline}>
+                  <RotateCcw size={12} />
+                  <span>Reset &amp; Retry Pipeline</span>
+                </button>
+              )}
+              {onClearError && errorMessage && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    onClearError();
+                    setManualViewOverride('loaded');
+                  }}
+                >
+                  <span>Dismiss</span>
+                </button>
+              )}
             </div>
-            <button type="button" className="btn-secondary">
-              <RotateCcw size={12} />
-              <span>Reset &amp; Retry Thresholds</span>
-            </button>
           </div>
         )}
       </div>
 
       {/* Floating Viewer Toolbar (Glassmorphism) — All Functional */}
-      {viewportState === 'loaded' && !webglError && (
+      {effectiveState === 'loaded' && !webglError && (
         <nav className="floating-viewer-toolbar glass-toolbar" aria-label="3D Viewport Controls">
           {/* Orbit Tool */}
           <button

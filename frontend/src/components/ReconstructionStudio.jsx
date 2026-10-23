@@ -26,6 +26,8 @@ export default function ReconstructionStudio({
   const [jobStatus, setJobStatus] = useState('idle'); // 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
   const [activeStageKey, setActiveStageKey] = useState(null);
   const [activeStageLabel, setActiveStageLabel] = useState(null);
+  const [stageIndex, setStageIndex] = useState(1);
+  const [totalStages, setTotalStages] = useState(6);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [reconstructionLogs, setReconstructionLogs] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
@@ -38,6 +40,8 @@ export default function ReconstructionStudio({
         setJobStatus(status.status);
         setActiveStageKey(status.stage);
         setActiveStageLabel(status.stageLabel);
+        if (status.stageIndex != null) setStageIndex(status.stageIndex);
+        if (status.totalStages != null) setTotalStages(status.totalStages);
         if (status.elapsedMs) {
           setElapsedSeconds(Math.floor(status.elapsedMs / 1000));
         }
@@ -61,6 +65,8 @@ export default function ReconstructionStudio({
       if (data.status) setJobStatus(data.status);
       if (data.stage) setActiveStageKey(data.stage);
       if (data.stageLabel) setActiveStageLabel(data.stageLabel);
+      if (data.stageIndex != null) setStageIndex(data.stageIndex);
+      if (data.totalStages != null) setTotalStages(data.totalStages);
       if (data.elapsedMs != null) {
         setElapsedSeconds(Math.floor(data.elapsedMs / 1000));
       }
@@ -325,6 +331,15 @@ export default function ReconstructionStudio({
           sessionModelFile={sessionModelFile}
           onAttachModelFile={onAttachModelFile}
           onAttachNativePly={onAttachNativePly}
+          jobStatus={jobStatus}
+          activeStageKey={activeStageKey}
+          activeStageLabel={activeStageLabel}
+          stageIndex={stageIndex}
+          totalStages={totalStages}
+          elapsedSeconds={elapsedSeconds}
+          errorMessage={errorMessage}
+          onRetryPipeline={handleStartPipeline}
+          onClearError={() => setErrorMessage(null)}
         />
 
         {/* Bottom Collapsible Pipeline Output & Console */}

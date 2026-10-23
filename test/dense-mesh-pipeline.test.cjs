@@ -656,4 +656,72 @@ describe('Sprint 9: OpenMVS Dense Reconstruction and Mesh Generation', () => {
     assert.equal(status.status, 'failed');
     assert.match(status.error, /Stage interface_colmap failed with exit code 1/);
   });
+
+  test('11. InterfaceCOLMAP stages sparse model files in omvs_input/sparse and surfaces log error details', async () => {
+    const fakeColmap = path.join(tempDir, 'colmap.exe');
+    const fakeInterface = path.join(tempDir, 'InterfaceCOLMAP.exe');
+    fs.writeFileSync(fakeColmap, '');
+    fs.writeFileSync(fakeInterface, '');
+
+    let stagedSparseChecked = false;
+
+    const mockSpawn = (exe, args, opts) => {
+      if (path.basename(exe).toLowerCase().includes('interfacecolmap')) {
+        // Verify that omvs_input/sparse was created and staged with model files
+        const stagedSparse = path.join(opts.cwd, 'omvs_input', 'sparse');
+        if (fs.existsSync(path.join(stagedSparse, 'cameras.bin')) &&
+            fs.existsSync(path.join(stagedSparse, 'images.bin')) &&
+            fs.existsSync(path.join(stagedSparse, 'points3D.bin'))) {
+          stagedSparseChecked = true;
+        }
+
+        // Write OpenMVS log file with diagnostic error
+        fs.writeFileSync(
+          path.join(opts.cwd, 'InterfaceCOLMAP-test.log'),
+          '18:00:00 [App] OpenMVS v2.4\n18:00:00 [App] error: no valid cameras (make sure they are in PINHOLE model)\n'
+        );
+        return createMockProcess({ exitCode: 1 });
+      }
+
+      return createMockProcess({
+        onSpawn: () => {
+          if (args[0] === 'mapper') {
+            const m0 = path.join(opts.cwd, 'sparse', '0');
+            fs.mkdirSync(m0, { recursive: true });
+            fs.writeFileSync(path.join(m0, 'points3D.bin'), buildColmapPoints3dBuffer([{ x: 1, y: 2, z: 3 }]));
+            fs.writeFileSync(path.join(m0, 'images.bin'), buildColmapImagesBuffer(2));
+            fs.writeFileSync(path.join(m0, 'cameras.bin'), Buffer.alloc(32));
+          }
+          if (args[0] === 'model_converter') {
+            fs.writeFileSync(path.join(opts.cwd, 'sparse.ply'), createPlyPointCloud(50));
+          }
+        },
+      });
+    };
+
+    await startSparseReconstructionJob({
+      imageDir,
+      outputDir: workspaceDir,
+      targetStage: 'dense',
+      colmapExe: fakeColmap,
+      customInterfaceColmapExe: fakeInterface,
+      customDensifyExe: fakeInterface,
+      spawnProcess: mockSpawn,
+    });
+
+    await new Promise((resolve) => {
+      const check = setInterval(() => {
+        const st = getReconstructionStatusJob();
+        if (st.status === 'failed') {
+          clearInterval(check);
+          resolve();
+        }
+      }, 20);
+    });
+
+    const status = getReconstructionStatusJob();
+    assert.equal(status.status, 'failed');
+    assert.ok(stagedSparseChecked, 'omvs_input/sparse must contain staged model files');
+    assert.match(status.error, /no valid cameras/);
+  });
 });
