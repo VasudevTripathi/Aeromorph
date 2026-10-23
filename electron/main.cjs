@@ -5,16 +5,20 @@
  * and secure IPC handlers for file dialogs and model ingestion.
  */
 
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const electron = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } =
+  electron && typeof electron === 'object' ? electron : {};
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFile, spawn, spawnSync } = require('child_process');
 
 // Single instance lock to prevent duplicate desktop processes
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
+if (app && typeof app.requestSingleInstanceLock === 'function') {
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    app.quit();
+  }
 }
 
 let mainWindow = null;
@@ -607,10 +611,61 @@ function terminateProcessTree(child) {
   } catch {}
 }
 
+const RUN_MANIFEST_FILENAME = '.aeromorph_run.json';
+
 /**
- * Validate input image folder and output workspace folder
+ * Check if a directory is a verified application-owned run directory.
+ * Must contain .aeromorph_run.json written by Aeromorph matching the expected jobId if provided.
  */
-async function validateReconstructionDirectories(rawImageDir, rawOutputDir) {
+function isApplicationOwnedRunDir(targetDir, expectedJobId = null) {
+  if (!targetDir || typeof targetDir !== 'string' || targetDir.includes('\0')) {
+    return false;
+  }
+  try {
+    const resolved = path.normalize(path.resolve(targetDir));
+    const markerPath = path.join(resolved, RUN_MANIFEST_FILENAME);
+    if (!fs.existsSync(markerPath)) {
+      return false;
+    }
+    const raw = fs.readFileSync(markerPath, 'utf8');
+    const marker = JSON.parse(raw);
+    if (!marker || marker.app !== 'Aeromorph' || !marker.appOwned) {
+      return false;
+    }
+    if (expectedJobId && marker.jobId !== expectedJobId) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Write application ownership marker to run directory
+ */
+function writeRunDirectoryManifest(runDir, { jobId, workspaceDir }) {
+  const markerPath = path.join(runDir, RUN_MANIFEST_FILENAME);
+  const manifest = {
+    app: 'Aeromorph',
+    version: 1,
+    jobId,
+    createdAt: Date.now(),
+    workspaceDir,
+    runDir,
+    appOwned: true,
+  };
+  fs.writeFileSync(markerPath, JSON.stringify(manifest, null, 2), 'utf8');
+  return manifest;
+}
+
+/**
+ * Validate input image folder, project workspace folder, and allocate or validate an isolated run directory.
+ * @param {string} rawImageDir - Path to input photographs directory
+ * @param {string} rawOutputDir - Path to user-selected project workspace directory
+ * @param {Object} [options] - Optional run configuration { runDir?: string, jobId?: string }
+ */
+async function validateReconstructionDirectories(rawImageDir, rawOutputDir, options = {}) {
   if (typeof rawImageDir !== 'string' || !rawImageDir.trim() || rawImageDir.includes('\0')) {
     return { valid: false, error: 'Invalid input image directory path argument.' };
   }
@@ -619,7 +674,7 @@ async function validateReconstructionDirectories(rawImageDir, rawOutputDir) {
   }
 
   const resolvedImageDir = path.normalize(path.resolve(rawImageDir.trim()));
-  const resolvedOutputDir = path.normalize(path.resolve(rawOutputDir.trim()));
+  const resolvedWorkspaceDir = path.normalize(path.resolve(rawOutputDir.trim()));
 
   // 1. Validate input image folder non-recursively
   const imageValidation = await validateAndCountImageDirectory(resolvedImageDir);
@@ -630,10 +685,10 @@ async function validateReconstructionDirectories(rawImageDir, rawOutputDir) {
     return { valid: false, error: 'At least 2 supported photographs are required for sparse reconstruction.' };
   }
 
-  // 2. Reject symbolic link output directory
-  if (fs.existsSync(resolvedOutputDir)) {
+  // 2. Reject symbolic link output workspace directory
+  if (fs.existsSync(resolvedWorkspaceDir)) {
     try {
-      const outStat = fs.lstatSync(resolvedOutputDir);
+      const outStat = fs.lstatSync(resolvedWorkspaceDir);
       if (outStat.isSymbolicLink()) {
         return { valid: false, error: 'Output workspace directory cannot be a symbolic link for security reasons.' };
       }
@@ -645,56 +700,176 @@ async function validateReconstructionDirectories(rawImageDir, rawOutputDir) {
     }
   }
 
-  // 3. Collision and nesting checks
+  // 3. Collision and nesting checks between imageDir and workspaceDir
   const lowerImg = resolvedImageDir.toLowerCase();
-  const lowerOut = resolvedOutputDir.toLowerCase();
+  const lowerWork = resolvedWorkspaceDir.toLowerCase();
 
-  if (lowerImg === lowerOut) {
+  if (lowerImg === lowerWork) {
     return { valid: false, error: 'Output project directory must be separate from the input photographs directory.' };
   }
 
-  const relToImg = path.relative(resolvedImageDir, resolvedOutputDir);
-  if (!relToImg.startsWith('..') && !path.isAbsolute(relToImg)) {
+  const relWorkToImg = path.relative(resolvedImageDir, resolvedWorkspaceDir);
+  if (!relWorkToImg.startsWith('..') && !path.isAbsolute(relWorkToImg)) {
     return { valid: false, error: 'Output workspace cannot be located inside the input photographs directory.' };
   }
 
-  const relToOut = path.relative(resolvedOutputDir, resolvedImageDir);
-  if (!relToOut.startsWith('..') && !path.isAbsolute(relToOut)) {
+  const relImgToWork = path.relative(resolvedWorkspaceDir, resolvedImageDir);
+  if (!relImgToWork.startsWith('..') && !path.isAbsolute(relImgToWork)) {
     return { valid: false, error: 'Input photographs directory cannot be located inside the output workspace.' };
   }
 
   // 4. Ensure output workspace exists and is writeable
   try {
-    fs.mkdirSync(resolvedOutputDir, { recursive: true });
-    const probe = path.join(resolvedOutputDir, `.aeromorph_probe_${Date.now()}`);
+    fs.mkdirSync(resolvedWorkspaceDir, { recursive: true });
+    const probe = path.join(resolvedWorkspaceDir, `.aeromorph_probe_${Date.now()}`);
     fs.writeFileSync(probe, 'write_test');
     fs.unlinkSync(probe);
   } catch (err) {
     return { valid: false, error: `Cannot write to output workspace directory: ${err.message}` };
   }
 
+  // 5. Establish and isolate per-run output directory
+  const runJobId = typeof options?.jobId === 'string' && options.jobId.trim()
+    ? options.jobId.trim()
+    : `job_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+
+  let resolvedRunDir = null;
+
+  if (options && typeof options.runDir === 'string' && options.runDir.trim()) {
+    // Explicit runDir specified
+    resolvedRunDir = path.normalize(path.resolve(options.runDir.trim()));
+
+    // Collision check between runDir and imageDir
+    const lowerRun = resolvedRunDir.toLowerCase();
+    if (lowerRun === lowerImg) {
+      return { valid: false, error: 'Run directory must be separate from the input photographs directory.' };
+    }
+    const relRunToImg = path.relative(resolvedImageDir, resolvedRunDir);
+    if (!relRunToImg.startsWith('..') && !path.isAbsolute(relRunToImg)) {
+      return { valid: false, error: 'Run directory cannot be located inside the input photographs directory.' };
+    }
+    const relImgToRun = path.relative(resolvedRunDir, resolvedImageDir);
+    if (!relImgToRun.startsWith('..') && !path.isAbsolute(relImgToRun)) {
+      return { valid: false, error: 'Input photographs directory cannot be located inside the run directory.' };
+    }
+
+    if (fs.existsSync(resolvedRunDir)) {
+      const runStat = fs.lstatSync(resolvedRunDir);
+      if (runStat.isSymbolicLink()) {
+        return { valid: false, error: 'Run directory cannot be a symbolic link for security reasons.' };
+      }
+      if (!runStat.isDirectory()) {
+        return { valid: false, error: 'Specified run directory path exists but is not a directory.' };
+      }
+
+      // Safeguard: Never overwrite pre-existing user files. Reject non-empty run directory.
+      const entries = fs.readdirSync(resolvedRunDir);
+      const nonManifestEntries = entries.filter((e) => e !== RUN_MANIFEST_FILENAME);
+      if (nonManifestEntries.length > 0) {
+        return {
+          valid: false,
+          error: `Output run directory "${resolvedRunDir}" is not empty (${nonManifestEntries.length} items found). A clean or application-allocated run directory is required to prevent overwriting or deleting user files.`,
+        };
+      }
+    } else {
+      try {
+        fs.mkdirSync(resolvedRunDir, { recursive: true });
+      } catch (err) {
+        return { valid: false, error: `Cannot create run directory: ${err.message}` };
+      }
+    }
+  } else {
+    // Automatically allocate unique application-owned run directory inside workspace 'runs' subfolder
+    const runsBaseDir = path.join(resolvedWorkspaceDir, 'runs');
+    try {
+      fs.mkdirSync(runsBaseDir, { recursive: true });
+    } catch (err) {
+      return { valid: false, error: `Cannot create runs folder in workspace: ${err.message}` };
+    }
+
+    resolvedRunDir = path.join(runsBaseDir, runJobId);
+    let counter = 1;
+    while (fs.existsSync(resolvedRunDir)) {
+      resolvedRunDir = path.join(runsBaseDir, `${runJobId}_${counter++}`);
+    }
+
+    try {
+      fs.mkdirSync(resolvedRunDir, { recursive: true });
+    } catch (err) {
+      return { valid: false, error: `Cannot create isolated run directory: ${err.message}` };
+    }
+  }
+
+  // Ensure run directory is writeable and mark as application-owned
+  try {
+    const probe = path.join(resolvedRunDir, `.aeromorph_run_probe_${Date.now()}`);
+    fs.writeFileSync(probe, 'write_test');
+    fs.unlinkSync(probe);
+    writeRunDirectoryManifest(resolvedRunDir, {
+      jobId: runJobId,
+      workspaceDir: resolvedWorkspaceDir,
+    });
+  } catch (err) {
+    return { valid: false, error: `Cannot initialize application-owned run directory: ${err.message}` };
+  }
+
   return {
     valid: true,
     imageDir: resolvedImageDir,
-    outputDir: resolvedOutputDir,
+    outputDir: resolvedWorkspaceDir,
+    workspaceDir: resolvedWorkspaceDir,
+    runDir: resolvedRunDir,
     imageCount: imageValidation.fileCount,
+    jobId: runJobId,
   };
 }
 
-function cleanupTemporaryJobArtifacts(outputDir) {
-  if (!outputDir || typeof outputDir !== 'string') return;
-  const tempFiles = [
-    path.join(outputDir, 'database.db-journal'),
-    path.join(outputDir, 'database.db-wal'),
-    path.join(outputDir, 'database.db-shm'),
-  ];
-  for (const f of tempFiles) {
+/**
+ * Clean up ephemeral job artifacts upon cancellation or failure.
+ * Strict ownership safety guarantees:
+ * - Refuses to delete anything if targetDir is not a verified application-owned run directory.
+ * - Never deletes database journal/WAL/SHM files merely because names match outside verified run dirs.
+ * - Never touches user files, workspace files, or artifacts belonging to other processes.
+ *
+ * @param {string} targetRunDir - Directory containing the job run
+ * @param {Object|string} [options] - Options or jobId string
+ * @returns {{ cleaned: boolean, removed: string[], reason?: string }}
+ */
+function cleanupTemporaryJobArtifacts(targetRunDir, options = {}) {
+  if (!targetRunDir || typeof targetRunDir !== 'string' || targetRunDir.includes('\0')) {
+    return { cleaned: false, removed: [], reason: 'Invalid run directory path.' };
+  }
+
+  const resolved = path.normalize(path.resolve(targetRunDir));
+  const expectedJobId = typeof options === 'string' ? options : options?.jobId || null;
+
+  // Ownership verification check: MUST be a verified application-owned run directory
+  if (!isApplicationOwnedRunDir(resolved, expectedJobId)) {
+    return {
+      cleaned: false,
+      removed: [],
+      reason: 'Directory is not a verified application-owned run directory. Cleanup skipped for safety.',
+    };
+  }
+
+  // Only remove temporary SQLite rollback/WAL journal files created within this verified runDir
+  const candidateNames = ['database.db-journal', 'database.db-wal', 'database.db-shm'];
+  const removed = [];
+
+  for (const name of candidateNames) {
+    const filePath = path.join(resolved, name);
     try {
-      if (fs.existsSync(f)) {
-        fs.unlinkSync(f);
+      if (fs.existsSync(filePath)) {
+        const stat = fs.lstatSync(filePath);
+        if (!stat.isSymbolicLink() && stat.isFile()) {
+          fs.unlinkSync(filePath);
+          removed.push(filePath);
+        }
       }
     } catch {}
   }
+
+  return { cleaned: true, removed };
 }
 
 /**
@@ -829,33 +1004,57 @@ function verifySparseReconstructionOutput(sparseDir) {
 /**
  * Run asynchronous sparse reconstruction sequence
  */
-async function startSparseReconstructionJob({ imageDir, outputDir, customColmapPath, numThreads = 4 }) {
-  // 1. Validate directories
-  const dirCheck = await validateReconstructionDirectories(imageDir, outputDir);
+async function startSparseReconstructionJob(config = {}) {
+  const {
+    imageDir,
+    outputDir,
+    runDir: explicitRunDir,
+    customColmapPath,
+    numThreads = 4,
+    spawnProcess: customSpawn,
+    colmapExe: customColmapExe,
+  } = config;
+
+  const jobId = typeof config.jobId === 'string' && config.jobId.trim()
+    ? config.jobId.trim()
+    : `job_${Date.now()}`;
+
+  // 1. Validate directories and establish isolated application-owned run directory
+  const dirCheck = await validateReconstructionDirectories(imageDir, outputDir, {
+    runDir: explicitRunDir,
+    jobId,
+  });
   if (!dirCheck.valid) {
     return { success: false, error: dirCheck.error };
   }
 
   // 2. Validate COLMAP executable
-  if (customColmapPath && typeof customColmapPath === 'string' && customColmapPath.trim()) {
-    const validCustom = validateBinaryExecutable(customColmapPath, ALLOWED_COLMAP_NAMES);
-    if (!validCustom) {
-      return { success: false, error: `Configured COLMAP executable "${customColmapPath}" was not found or is invalid.` };
+  let colmapExe = customColmapExe || null;
+  let colmapVersion = null;
+
+  if (!colmapExe) {
+    if (customColmapPath && typeof customColmapPath === 'string' && customColmapPath.trim()) {
+      const validCustom = validateBinaryExecutable(customColmapPath, ALLOWED_COLMAP_NAMES);
+      if (!validCustom) {
+        return { success: false, error: `Configured COLMAP executable "${customColmapPath}" was not found or is invalid.` };
+      }
     }
+
+    const colmapDetection = await detectColmapTool(customColmapPath);
+    if (!colmapDetection.detected || !colmapDetection.path) {
+      return { success: false, error: colmapDetection.error || 'COLMAP executable was not detected.' };
+    }
+    colmapExe = colmapDetection.path;
+    colmapVersion = colmapDetection.version;
   }
 
-  const colmapDetection = await detectColmapTool(customColmapPath);
-  if (!colmapDetection.detected || !colmapDetection.path) {
-    return { success: false, error: colmapDetection.error || 'COLMAP executable was not detected.' };
-  }
-
-  const colmapExe = colmapDetection.path;
-  const dbPath = path.join(dirCheck.outputDir, 'database.db');
-  const sparseDir = path.join(dirCheck.outputDir, 'sparse');
+  const runDir = dirCheck.runDir;
+  const dbPath = path.join(runDir, 'database.db');
+  const sparseDir = path.join(runDir, 'sparse');
   fs.mkdirSync(sparseDir, { recursive: true });
 
-  const jobId = `job_${Date.now()}`;
-  const logFilePath = path.join(dirCheck.outputDir, 'aeromorph_colmap.log');
+  const logFilePath = path.join(runDir, 'aeromorph_colmap.log');
+  const spawnFn = typeof customSpawn === 'function' ? customSpawn : spawn;
 
   activeReconstructionJob = {
     id: jobId,
@@ -867,7 +1066,8 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
     startTime: Date.now(),
     endTime: null,
     imageDir: dirCheck.imageDir,
-    outputDir: dirCheck.outputDir,
+    outputDir: dirCheck.workspaceDir,
+    runDir: runDir,
     databasePath: dbPath,
     sparseDir: sparseDir,
     colmapPath: colmapExe,
@@ -893,8 +1093,9 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
   };
 
   appendJobLog('setup', `Starting Sparse Reconstruction: ${dirCheck.imageCount} photographs`);
-  appendJobLog('setup', `COLMAP: ${colmapExe} (version: ${colmapDetection.version || 'unknown'})`);
-  appendJobLog('setup', `Output Workspace: ${dirCheck.outputDir}`);
+  appendJobLog('setup', `COLMAP: ${colmapExe} (version: ${colmapVersion || 'detected'})`);
+  appendJobLog('setup', `Workspace: ${dirCheck.workspaceDir}`);
+  appendJobLog('setup', `Isolated Run Directory: ${runDir}`);
 
   emitReconstructionProgress({
     jobId,
@@ -904,6 +1105,7 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
     stageIndex: 1,
     totalStages: 3,
     elapsedMs: 0,
+    runDir,
   });
 
   // Run stages asynchronously in background
@@ -934,6 +1136,7 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
           stageIndex: i + 1,
           totalStages: 3,
           elapsedMs: Date.now() - activeReconstructionJob.startTime,
+          runDir,
         });
 
         appendJobLog(currentStage.key, `--- Starting Stage ${currentStage.num}: ${currentStage.label} ---`);
@@ -948,8 +1151,8 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         await new Promise((resolve, reject) => {
           let proc;
           try {
-            proc = spawn(colmapExe, args, {
-              cwd: dirCheck.outputDir,
+            proc = spawnFn(colmapExe, args, {
+              cwd: runDir,
               shell: false,
               windowsHide: true,
             });
@@ -957,16 +1160,18 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
             return reject(new Error(`Failed to start ${currentStage.key}: ${spawnErr.message}`));
           }
 
-          activeReconstructionJob.currentProcess = proc;
+          if (activeReconstructionJob) {
+            activeReconstructionJob.currentProcess = proc;
+          }
 
-          proc.stdout.on('data', (chunk) => {
+          proc.stdout?.on('data', (chunk) => {
             const lines = chunk.toString().split(/\r?\n/);
             for (const l of lines) {
               if (l.trim()) appendJobLog(currentStage.key, l);
             }
           });
 
-          proc.stderr.on('data', (chunk) => {
+          proc.stderr?.on('data', (chunk) => {
             const lines = chunk.toString().split(/\r?\n/);
             for (const l of lines) {
               if (l.trim()) appendJobLog(currentStage.key, l);
@@ -974,13 +1179,17 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
           });
 
           proc.on('error', (err) => {
-            activeReconstructionJob.currentProcess = null;
+            if (activeReconstructionJob) {
+              activeReconstructionJob.currentProcess = null;
+            }
             reject(err);
           });
 
           proc.on('close', (code, signal) => {
-            activeReconstructionJob.currentProcess = null;
-            if (activeReconstructionJob.status === 'cancelled') {
+            if (activeReconstructionJob) {
+              activeReconstructionJob.currentProcess = null;
+            }
+            if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
               return resolve({ cancelled: true });
             }
             if (code === 0) {
@@ -992,18 +1201,21 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         });
       }
 
-      if (activeReconstructionJob.status === 'cancelled') {
-        cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
         appendJobLog('system', 'Sparse reconstruction was cancelled by user.');
         emitReconstructionProgress({
           jobId,
           status: 'cancelled',
+          settled: true,
           stage: activeReconstructionJob.stage,
           stageLabel: activeReconstructionJob.stageLabel,
           stageIndex: activeReconstructionJob.stageIndex,
           totalStages: 3,
           elapsedMs: (activeReconstructionJob.endTime || Date.now()) - activeReconstructionJob.startTime,
           error: 'Pipeline cancelled by user.',
+          runDir,
         });
         return;
       }
@@ -1019,7 +1231,7 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
 
       // Cancellation check before model converter
       if (activeReconstructionJob.status === 'cancelled') {
-        cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
         return;
       }
 
@@ -1035,76 +1247,105 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         });
 
         await new Promise((resolve) => {
-          if (activeReconstructionJob.status === 'cancelled') {
+          if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
             return resolve(false);
           }
           let convProc;
           try {
-            convProc = spawn(colmapExe, convArgs, {
-              cwd: dirCheck.outputDir,
+            convProc = spawnFn(colmapExe, convArgs, {
+              cwd: runDir,
               shell: false,
               windowsHide: true,
             });
-            activeReconstructionJob.currentProcess = convProc;
+            if (activeReconstructionJob) {
+              activeReconstructionJob.currentProcess = convProc;
+            }
           } catch {
             return resolve(false);
           }
+
+          convProc.stdout?.on('data', (chunk) => {
+            const lines = chunk.toString().split(/\r?\n/);
+            for (const l of lines) {
+              if (l.trim()) appendJobLog('export', l);
+            }
+          });
+
+          convProc.stderr?.on('data', (chunk) => {
+            const lines = chunk.toString().split(/\r?\n/);
+            for (const l of lines) {
+              if (l.trim()) appendJobLog('export', l);
+            }
+          });
+
           convProc.on('close', (c) => {
-            activeReconstructionJob.currentProcess = null;
-            resolve(c === 0 && activeReconstructionJob.status !== 'cancelled');
+            if (activeReconstructionJob) {
+              activeReconstructionJob.currentProcess = null;
+            }
+            resolve(c === 0 && (!activeReconstructionJob || activeReconstructionJob.status !== 'cancelled'));
           });
           convProc.on('error', () => {
-            activeReconstructionJob.currentProcess = null;
+            if (activeReconstructionJob) {
+              activeReconstructionJob.currentProcess = null;
+            }
             resolve(false);
           });
         });
 
-        if (activeReconstructionJob.status === 'cancelled') {
-          cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+        if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+          cleanupTemporaryJobArtifacts(runDir, { jobId });
+          activeReconstructionJob.settled = true;
           return;
         }
 
-        const expectedPly = path.join(dirCheck.outputDir, 'sparse.ply');
+        const expectedPly = path.join(runDir, 'sparse.ply');
         if (fs.existsSync(expectedPly) && fs.statSync(expectedPly).size > 0) {
-          plyPath = expectedPly;
-          authorizedPlyPaths.add(toCanonicalPath(expectedPly));
-          appendJobLog('export', `Exported sparse point cloud to PLY: ${expectedPly}`);
+          plyPath = path.normalize(path.resolve(expectedPly));
+          authorizedPlyPaths.add(toCanonicalPath(plyPath));
+          appendJobLog('export', `Exported sparse point cloud to PLY: ${plyPath}`);
         }
       } catch (convErr) {
         appendJobLog('export', `Note: PLY conversion skipped: ${convErr.message}`);
       }
 
-      if (activeReconstructionJob.status === 'cancelled') {
-        cleanupTemporaryJobArtifacts(dirCheck.outputDir);
+      if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
+        cleanupTemporaryJobArtifacts(runDir, { jobId });
+        activeReconstructionJob.settled = true;
         return;
       }
 
-      activeReconstructionJob.status = 'completed';
-      activeReconstructionJob.endTime = Date.now();
-      activeReconstructionJob.plyPath = plyPath;
-      activeReconstructionJob.modelStats = {
-        modelDir: verifyRes.modelDir,
-        pointsSize: verifyRes.pointsSize,
-        plyPath,
-      };
+      if (activeReconstructionJob) {
+        activeReconstructionJob.status = 'completed';
+        activeReconstructionJob.settled = true;
+        activeReconstructionJob.endTime = Date.now();
+        activeReconstructionJob.plyPath = plyPath;
+        activeReconstructionJob.modelStats = {
+          modelDir: verifyRes.modelDir,
+          pointsSize: verifyRes.pointsSize,
+          plyPath,
+        };
+      }
 
       appendJobLog('system', '✓ Sparse Reconstruction Pipeline completed successfully!');
 
       emitReconstructionProgress({
         jobId,
         status: 'completed',
+        settled: true,
         stage: 'mapper',
         stageLabel: 'Completed',
         stageIndex: 3,
         totalStages: 3,
-        elapsedMs: activeReconstructionJob.endTime - activeReconstructionJob.startTime,
-        modelStats: activeReconstructionJob.modelStats,
+        elapsedMs: activeReconstructionJob ? activeReconstructionJob.endTime - activeReconstructionJob.startTime : 0,
+        modelStats: activeReconstructionJob ? activeReconstructionJob.modelStats : null,
         plyPath,
+        runDir,
       });
     } catch (err) {
-      cleanupTemporaryJobArtifacts(dirCheck.outputDir);
-      if (activeReconstructionJob.status !== 'cancelled') {
+      cleanupTemporaryJobArtifacts(runDir, { jobId });
+      if (activeReconstructionJob && activeReconstructionJob.status !== 'cancelled') {
         activeReconstructionJob.status = 'failed';
+        activeReconstructionJob.settled = true;
         activeReconstructionJob.endTime = Date.now();
         activeReconstructionJob.currentProcess = null;
         activeReconstructionJob.error = err.message;
@@ -1113,12 +1354,14 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
         emitReconstructionProgress({
           jobId,
           status: 'failed',
+          settled: true,
           stage: activeReconstructionJob.stage,
           stageLabel: activeReconstructionJob.stageLabel,
           stageIndex: activeReconstructionJob.stageIndex,
           totalStages: 3,
           elapsedMs: activeReconstructionJob.endTime - activeReconstructionJob.startTime,
           error: err.message,
+          runDir,
         });
       }
     }
@@ -1128,7 +1371,8 @@ async function startSparseReconstructionJob({ imageDir, outputDir, customColmapP
     success: true,
     jobId,
     imageDir: dirCheck.imageDir,
-    outputDir: dirCheck.outputDir,
+    outputDir: dirCheck.workspaceDir,
+    runDir: dirCheck.runDir,
   };
 }
 
@@ -1208,21 +1452,72 @@ function createWindow() {
 }
 
 // Global WebContents hardening
-app.on('web-contents-created', (event, contents) => {
-  contents.on('will-attach-webview', (webviewEvent) => {
-    webviewEvent.preventDefault();
+if (app && typeof app.on === 'function') {
+  app.on('web-contents-created', (event, contents) => {
+    contents.on('will-attach-webview', (webviewEvent) => {
+      webviewEvent.preventDefault();
+    });
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
   });
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-});
+}
+
+/**
+ * Cancel active reconstruction job helper
+ */
+async function cancelSparseReconstructionJob() {
+  if (!activeReconstructionJob || activeReconstructionJob.status !== 'running') {
+    return { canceled: false, message: 'No active reconstruction job to cancel.' };
+  }
+
+  activeReconstructionJob.status = 'cancelled';
+  activeReconstructionJob.endTime = Date.now();
+  if (activeReconstructionJob.currentProcess) {
+    terminateProcessTree(activeReconstructionJob.currentProcess);
+  }
+
+  return { canceled: true };
+}
+
+/**
+ * Get active reconstruction job status snapshot
+ */
+function getReconstructionStatusJob() {
+  if (!activeReconstructionJob) {
+    return { status: 'idle', settled: true, stage: null, logs: [] };
+  }
+
+  return {
+    id: activeReconstructionJob.id,
+    status: activeReconstructionJob.status,
+    settled: Boolean(activeReconstructionJob.settled),
+    stage: activeReconstructionJob.stage,
+    stageLabel: activeReconstructionJob.stageLabel,
+    stageIndex: activeReconstructionJob.stageIndex,
+    totalStages: activeReconstructionJob.totalStages,
+    startTime: activeReconstructionJob.startTime,
+    endTime: activeReconstructionJob.endTime,
+    elapsedMs: activeReconstructionJob.endTime
+      ? activeReconstructionJob.endTime - activeReconstructionJob.startTime
+      : Date.now() - activeReconstructionJob.startTime,
+    imageDir: activeReconstructionJob.imageDir,
+    outputDir: activeReconstructionJob.outputDir,
+    runDir: activeReconstructionJob.runDir,
+    error: activeReconstructionJob.error,
+    modelStats: activeReconstructionJob.modelStats,
+    plyPath: activeReconstructionJob.plyPath,
+    logs: activeReconstructionJob.logs.slice(-150),
+  };
+}
 
 // ------------------------------------------------------------------------------
 // Secure IPC Handlers
 // ------------------------------------------------------------------------------
 
-/**
- * 1. Platform Info Handler
- */
-ipcMain.handle('desktop:getPlatformInfo', async () => {
+if (ipcMain && typeof ipcMain.handle === 'function') {
+  /**
+   * 1. Platform Info Handler
+   */
+  ipcMain.handle('desktop:getPlatformInfo', async () => {
   return {
     platform: process.platform,
     arch: process.arch,
@@ -1551,99 +1846,71 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
   }
 });
 
-/**
- * 10. Sprint 6B: Start Sparse Reconstruction Pipeline
- */
-ipcMain.handle('reconstruction:start', async (event, config = {}) => {
-  if (activeReconstructionJob && activeReconstructionJob.status === 'running') {
-    return {
-      success: false,
-      error: 'A reconstruction job is already in progress. Wait for it to finish or cancel it first.',
+  /**
+   * 10. Sprint 6B: Start Sparse Reconstruction Pipeline
+   */
+  ipcMain.handle('reconstruction:start', async (event, config = {}) => {
+    if (activeReconstructionJob && activeReconstructionJob.status === 'running') {
+      return {
+        success: false,
+        error: 'A reconstruction job is already in progress. Wait for it to finish or cancel it first.',
+      };
+    }
+
+    const sanitized = {
+      imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
+      outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
+      runDir: typeof config.runDir === 'string' ? config.runDir.trim() : null,
+      customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
+      numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= 8 ? config.numThreads : 4,
     };
-  }
 
-  const sanitized = {
-    imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
-    outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
-    customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
-    numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= 8 ? config.numThreads : 4,
-  };
+    return await startSparseReconstructionJob(sanitized);
+  });
 
-  return await startSparseReconstructionJob(sanitized);
-});
+  /**
+   * 11. Sprint 6B: Cancel Active Reconstruction Pipeline
+   */
+  ipcMain.handle('reconstruction:cancel', async () => {
+    return await cancelSparseReconstructionJob();
+  });
 
-/**
- * 11. Sprint 6B: Cancel Active Reconstruction Pipeline
- */
-ipcMain.handle('reconstruction:cancel', async () => {
-  if (!activeReconstructionJob || activeReconstructionJob.status !== 'running') {
-    return { canceled: false, message: 'No active reconstruction job to cancel.' };
-  }
-
-  activeReconstructionJob.status = 'cancelled';
-  activeReconstructionJob.endTime = Date.now();
-  if (activeReconstructionJob.currentProcess) {
-    terminateProcessTree(activeReconstructionJob.currentProcess);
-  }
-
-  return { canceled: true };
-});
-
-/**
- * 12. Sprint 6B: Get Reconstruction Job Status
- */
-ipcMain.handle('reconstruction:getStatus', async () => {
-  if (!activeReconstructionJob) {
-    return { status: 'idle', stage: null, logs: [] };
-  }
-
-  return {
-    id: activeReconstructionJob.id,
-    status: activeReconstructionJob.status,
-    stage: activeReconstructionJob.stage,
-    stageLabel: activeReconstructionJob.stageLabel,
-    stageIndex: activeReconstructionJob.stageIndex,
-    totalStages: activeReconstructionJob.totalStages,
-    startTime: activeReconstructionJob.startTime,
-    endTime: activeReconstructionJob.endTime,
-    elapsedMs: activeReconstructionJob.endTime
-      ? activeReconstructionJob.endTime - activeReconstructionJob.startTime
-      : Date.now() - activeReconstructionJob.startTime,
-    imageDir: activeReconstructionJob.imageDir,
-    outputDir: activeReconstructionJob.outputDir,
-    error: activeReconstructionJob.error,
-    modelStats: activeReconstructionJob.modelStats,
-    plyPath: activeReconstructionJob.plyPath,
-    logs: activeReconstructionJob.logs.slice(-150),
-  };
-});
+  /**
+   * 12. Sprint 6B: Get Reconstruction Job Status
+   */
+  ipcMain.handle('reconstruction:getStatus', async () => {
+    return getReconstructionStatusJob();
+  });
+}
 
 // ------------------------------------------------------------------------------
 // App Lifecycle
 // ------------------------------------------------------------------------------
 
-app.whenReady().then(() => {
-  createWindow();
+if (app && typeof app.whenReady === 'function') {
+  app.whenReady().then(() => {
+    createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow && BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
     }
   });
-});
 
-app.on('second-instance', () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  }
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
+}
 
 module.exports = {
   validateBinaryExecutable,
@@ -1652,9 +1919,18 @@ module.exports = {
   buildColmapStageArgs,
   verifySparseReconstructionOutput,
   startSparseReconstructionJob,
+  cancelSparseReconstructionJob,
+  getReconstructionStatusJob,
   terminateProcessTree,
   cleanupTemporaryJobArtifacts,
+  isApplicationOwnedRunDir,
   detectColmapTool,
   detectOpenMvsTool,
   inspectOpenMvsModules,
+  toCanonicalPath,
+  authorizedPlyPaths,
+  RUN_MANIFEST_FILENAME,
+  _resetActiveReconstructionJobForTest: () => {
+    activeReconstructionJob = null;
+  },
 };
