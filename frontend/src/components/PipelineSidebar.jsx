@@ -9,8 +9,15 @@ export default function PipelineSidebar({
   activeStageKey = null,
   targetStage = 'mesh',
   onTargetStageChange = null,
+  pipelinePreset = 'balanced',
+  onPipelinePresetChange = null,
+  matcherType = 'sequential',
+  onMatcherTypeChange = null,
+  numThreads = 8,
+  onNumThreadsChange = null,
   elapsedSeconds = 0,
   onStartPipeline,
+  onResumePipeline = null,
   onCancelPipeline,
   onSelectWorkspace,
 }) {
@@ -36,9 +43,9 @@ export default function PipelineSidebar({
     }
 
     if (stageId === 'feature_matching') {
-      if (activeStageKey === 'exhaustive_matcher' && isRunning) return 'running';
-      if (jobStatus === 'completed' || (isRunning && !['feature_extractor', 'exhaustive_matcher'].includes(activeStageKey))) return 'done';
-      if (jobStatus === 'failed' && activeStageKey === 'exhaustive_matcher') return 'failed';
+      if (['exhaustive_matcher', 'sequential_matcher'].includes(activeStageKey) && isRunning) return 'running';
+      if (jobStatus === 'completed' || (isRunning && !['feature_extractor', 'exhaustive_matcher', 'sequential_matcher'].includes(activeStageKey))) return 'done';
+      if (jobStatus === 'failed' && ['exhaustive_matcher', 'sequential_matcher'].includes(activeStageKey)) return 'failed';
       return 'pending';
     }
 
@@ -91,9 +98,9 @@ export default function PipelineSidebar({
       id: 'feature_matching',
       num: '02',
       name: 'Feature Matching',
-      engine: 'COLMAP Exhaustive',
+      engine: matcherType === 'sequential' ? 'COLMAP Sequential' : 'COLMAP Exhaustive',
       status: getStageStatus('feature_matching'),
-      stats: 'Two-view geometric verification',
+      stats: matcherType === 'sequential' ? 'Fast overlap window matching (recommended)' : 'Two-view geometric verification (all pairs)',
     },
     {
       id: 'sparse_reconstruction',
@@ -147,7 +154,7 @@ export default function PipelineSidebar({
       <div className="sidebar-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
           <span className="sidebar-title">Pipeline Stages</span>
-          <span className="sidebar-sample-pill">Sprint 9</span>
+          <span className="sidebar-sample-pill">Local Engine</span>
         </div>
         <button type="button" className="btn-ghost" title="Pipeline parameters">
           <Settings2 size={13} />
@@ -167,8 +174,8 @@ export default function PipelineSidebar({
         </div>
       </div>
 
-      {/* Target Stage Depth Selector */}
-      <div style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+      {/* Target Stage Depth Selector & Performance Controls */}
+      <div style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ color: 'var(--text-muted)' }}>Pipeline Target:</span>
           <select
@@ -189,6 +196,59 @@ export default function PipelineSidebar({
             <option value="dense">Dense Cloud Only</option>
             <option value="sparse">Sparse Cloud Only</option>
           </select>
+        </div>
+
+        {/* Speed / Quality Preset */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Speed Preset:</span>
+          <select
+            value={pipelinePreset}
+            onChange={(e) => onPipelinePresetChange && onPipelinePresetChange(e.target.value)}
+            disabled={isRunning}
+            style={{
+              background: 'var(--bg-primary, #0f172a)',
+              color: pipelinePreset === 'fast' ? 'var(--accent)' : 'var(--text-primary)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '4px',
+              padding: '2px 6px',
+              fontSize: '11px',
+              cursor: isRunning ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <option value="fast">⚡ Fast (~4x faster, 100+ photos)</option>
+            <option value="balanced">⚖ Balanced (Default)</option>
+            <option value="full">🎯 Full Precision (Exhaustive)</option>
+          </select>
+        </div>
+
+        {/* Matcher Strategy */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{ color: 'var(--text-muted)' }}>Matcher Mode:</span>
+          <select
+            value={matcherType}
+            onChange={(e) => onMatcherTypeChange && onMatcherTypeChange(e.target.value)}
+            disabled={isRunning}
+            style={{
+              background: 'var(--bg-primary, #0f172a)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '4px',
+              padding: '2px 6px',
+              fontSize: '11px',
+              cursor: isRunning ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <option value="sequential">Sequential (Overlap 10)</option>
+            <option value="exhaustive">Exhaustive (All Pairs)</option>
+          </select>
+        </div>
+
+        {/* Multi-core CPU allocation */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '10.5px' }}>
+          <span style={{ color: 'var(--text-muted)' }}>CPU Allocation:</span>
+          <span style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+            {numThreads || 8} Threads (Multi-core)
+          </span>
         </div>
       </div>
 
@@ -309,18 +369,32 @@ export default function PipelineSidebar({
             <span>Cancel Reconstruction</span>
           </button>
         ) : (
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={onStartPipeline}
-            style={{ width: '100%', marginTop: '4px' }}
-            title={targetStage === 'mesh' ? 'Run COLMAP + OpenMVS Densify + ReconstructMesh' : (targetStage === 'dense' ? 'Run COLMAP + OpenMVS Densify' : 'Run COLMAP Sparse Reconstruction')}
-          >
-            <Play size={13} />
-            <span>
-              {targetStage === 'mesh' ? 'Launch Mesh Pipeline (Sprint 9)' : (targetStage === 'dense' ? 'Launch Dense Pipeline' : 'Launch Sparse Pipeline')}
-            </span>
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', width: '100%', marginTop: '4px' }}>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={onStartPipeline}
+              style={{ width: '100%' }}
+              title={targetStage === 'mesh' ? 'Run COLMAP + OpenMVS Densify + ReconstructMesh' : (targetStage === 'dense' ? 'Run COLMAP + OpenMVS Densify' : 'Run COLMAP Sparse Reconstruction')}
+            >
+              <Play size={13} />
+              <span>
+                {targetStage === 'mesh' ? 'Launch Full Mesh Pipeline' : (targetStage === 'dense' ? 'Launch Dense Pipeline' : 'Launch Sparse Pipeline')}
+              </span>
+            </button>
+            {onResumePipeline && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={onResumePipeline}
+                style={{ width: '100%', fontSize: '11px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'rgba(213, 255, 101, 0.08)', borderColor: 'rgba(213, 255, 101, 0.3)', color: 'var(--accent)' }}
+                title="Resume pipeline reusing already computed features, matching, or sparse point clouds"
+              >
+                <Sparkles size={11} color="var(--accent)" />
+                <span>Resume from Last Stage</span>
+              </button>
+            )}
+          </div>
         )}
       </div>
     </aside>

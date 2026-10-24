@@ -27,6 +27,8 @@ const { EventEmitter } = require('node:events');
 
 const {
   buildOpenMvsStageArgs,
+  buildColmapStageArgs,
+  ensurePinholeCameras,
   verifyOpenMvsScene,
   verifyOpenMvsDenseOutput,
   verifyOpenMvsMeshOutput,
@@ -723,5 +725,192 @@ describe('Sprint 9: OpenMVS Dense Reconstruction and Mesh Generation', () => {
     assert.equal(status.status, 'failed');
     assert.ok(stagedSparseChecked, 'omvs_input/sparse must contain staged model files');
     assert.match(status.error, /no valid cameras/);
+  });
+
+  test('12. High-performance pipeline options: sequential matcher, max_image_size, and thread scaling', async () => {
+    // 12a. Verify buildColmapStageArgs generates sequential_matcher and max_image_size correctly
+    const seqArgs = buildColmapStageArgs('sequential_matcher', {
+      databasePath: path.join(tempDir, 'db.db'),
+      overlap: 8,
+      numThreads: 8,
+    });
+    assert.deepEqual(seqArgs, [
+      'sequential_matcher',
+      '--database_path', path.join(tempDir, 'db.db'),
+      '--SequentialMatching.overlap', '8',
+      '--SequentialMatching.quadratic_overlap', '1',
+      '--FeatureMatching.use_gpu', '0',
+      '--FeatureMatching.num_threads', '8',
+    ]);
+
+    const extArgs = buildColmapStageArgs('feature_extractor', {
+      databasePath: path.join(tempDir, 'db.db'),
+      imagePath: imageDir,
+      numThreads: 8,
+      maxImageSize: 1600,
+    });
+    assert.ok(extArgs.includes('--FeatureExtraction.max_image_size'));
+    assert.equal(extArgs[extArgs.indexOf('--FeatureExtraction.max_image_size') + 1], '1600');
+
+    // 12b. Verify startSparseReconstructionJob executes with sequential matcher
+    let executedSequential = false;
+    const fakeColmap = path.join(tempDir, 'colmap_fast.exe');
+    fs.writeFileSync(fakeColmap, '');
+
+    const mockSpawn = (exe, args, opts) => {
+      if (args[0] === 'sequential_matcher') {
+        executedSequential = true;
+      }
+      return createMockProcess({
+        exitCode: 0,
+        onSpawn: () => {
+          if (args[0] === 'mapper') {
+            const m0 = path.join(opts.cwd, 'sparse', '0');
+            fs.mkdirSync(m0, { recursive: true });
+            fs.writeFileSync(path.join(m0, 'points3D.bin'), buildColmapPoints3dBuffer([{ x: 1, y: 2, z: 3 }]));
+            fs.writeFileSync(path.join(m0, 'images.bin'), buildColmapImagesBuffer(2));
+            fs.writeFileSync(path.join(m0, 'cameras.bin'), Buffer.alloc(32));
+          }
+          if (args[0] === 'model_converter') {
+            fs.writeFileSync(path.join(opts.cwd, 'sparse.ply'), createPlyPointCloud(50));
+          }
+        },
+      });
+    };
+
+    const res = await startSparseReconstructionJob({
+      imageDir,
+      outputDir: workspaceDir,
+      targetStage: 'sparse',
+      matcherType: 'sequential',
+      maxImageSize: 1600,
+      numThreads: 8,
+      colmapExe: fakeColmap,
+      spawnProcess: mockSpawn,
+    });
+    assert.equal(res.success, true);
+
+    await new Promise((resolve) => {
+      const check = setInterval(() => {
+        const st = getReconstructionStatusJob();
+        if (st.status === 'completed') {
+          clearInterval(check);
+          resolve();
+        }
+      }, 20);
+    });
+
+    assert.ok(executedSequential, 'sequential_matcher must be invoked when matcherType is sequential');
+  });
+
+  test('13. ensurePinholeCameras converts SIMPLE_RADIAL and RADIAL models to PINHOLE for OpenMVS compatibility', () => {
+    const testDir = path.join(tempDir, 'pinhole_test');
+    fs.mkdirSync(testDir, { recursive: true });
+
+    // 13a. Binary cameras.bin conversion
+    const binPath = path.join(testDir, 'cameras.bin');
+    const buf = Buffer.alloc(8 + 24 + 32);
+    buf.writeBigUInt64LE(1n, 0); // 1 camera
+    buf.writeUInt32LE(1, 8); // camera_id = 1
+    buf.writeInt32LE(2, 12); // model_id = 2 (SIMPLE_RADIAL)
+    buf.writeBigUInt64LE(1920n, 16); // width
+    buf.writeBigUInt64LE(1080n, 24); // height
+    buf.writeDoubleLE(1200.0, 32); // f
+    buf.writeDoubleLE(960.0, 40); // cx
+    buf.writeDoubleLE(540.0, 48); // cy
+    buf.writeDoubleLE(0.05, 56); // k (distortion)
+    fs.writeFileSync(binPath, buf);
+
+    // 13b. Text cameras.txt conversion
+    const txtPath = path.join(testDir, 'cameras.txt');
+    fs.writeFileSync(txtPath, '# Header\n1 SIMPLE_RADIAL 1920 1080 1200.0 960.0 540.0 0.05\n');
+
+    const modified = ensurePinholeCameras(testDir);
+    assert.equal(modified, true);
+
+    // Verify binary conversion to PINHOLE (model_id = 1)
+    const convertedBin = fs.readFileSync(binPath);
+    assert.equal(convertedBin.readInt32LE(12), 1, 'model_id must be converted to 1 (PINHOLE)');
+    assert.equal(convertedBin.readDoubleLE(32), 1200.0, 'fx must equal f');
+    assert.equal(convertedBin.readDoubleLE(40), 1200.0, 'fy must equal f');
+    assert.equal(convertedBin.readDoubleLE(48), 960.0, 'cx must be preserved');
+    assert.equal(convertedBin.readDoubleLE(56), 540.0, 'cy must be preserved');
+
+    // Verify text conversion to PINHOLE
+    const convertedTxt = fs.readFileSync(txtPath, 'utf8');
+    assert.ok(convertedTxt.includes('1 PINHOLE 1920 1080 1200.0 1200.0 960.0 540.0'));
+  });
+
+  test('14. Pipeline resume reuses existing verified sparse reconstruction and skips colmap stages', async () => {
+    const fakeColmap = path.join(tempDir, 'colmap_res.exe');
+    const fakeInterface = path.join(tempDir, 'InterfaceCOLMAP_res.exe');
+    const fakeDensify = path.join(tempDir, 'DensifyPointCloud_res.exe');
+    fs.writeFileSync(fakeColmap, '');
+    fs.writeFileSync(fakeInterface, '');
+    fs.writeFileSync(fakeDensify, '');
+
+    // Pre-create an application-owned run with verified sparse model
+    const runsBase = path.join(workspaceDir, 'runs');
+    const existingRun = path.join(runsBase, 'job_existing');
+    const sparseM0 = path.join(existingRun, 'sparse', '0');
+    fs.mkdirSync(sparseM0, { recursive: true });
+    fs.writeFileSync(path.join(existingRun, '.aeromorph_run.json'), JSON.stringify({ jobId: 'job_existing' }));
+    fs.writeFileSync(path.join(sparseM0, 'points3D.bin'), buildColmapPoints3dBuffer([{ x: 1, y: 2, z: 3 }]));
+    fs.writeFileSync(path.join(sparseM0, 'images.bin'), buildColmapImagesBuffer(2));
+    fs.writeFileSync(path.join(sparseM0, 'cameras.bin'), Buffer.alloc(32));
+
+    const invokedStages = [];
+    const mockSpawn = (exe, args, opts) => {
+      invokedStages.push({ exe: path.basename(exe), stage: args[0] });
+      return createMockProcess({
+        exitCode: 0,
+        onSpawn: () => {
+          if (args[0] === 'model_converter') {
+            fs.writeFileSync(path.join(opts.cwd, 'sparse.ply'), createPlyPointCloud(50));
+          }
+          if (path.basename(exe).toLowerCase().includes('interfacecolmap')) {
+            fs.writeFileSync(path.join(opts.cwd, 'scene.mvs'), Buffer.alloc(256, 0xAA));
+          }
+          if (path.basename(exe).toLowerCase().includes('densifypointcloud')) {
+            fs.writeFileSync(path.join(opts.cwd, 'scene_dense.mvs'), Buffer.alloc(256, 0xBB));
+            fs.writeFileSync(path.join(opts.cwd, 'scene_dense.ply'), createPlyPointCloud(500));
+          }
+        },
+      });
+    };
+
+    const res = await startSparseReconstructionJob({
+      imageDir,
+      outputDir: workspaceDir,
+      runDir: existingRun,
+      targetStage: 'dense',
+      resume: true,
+      colmapExe: fakeColmap,
+      customInterfaceColmapExe: fakeInterface,
+      customDensifyExe: fakeDensify,
+      spawnProcess: mockSpawn,
+    });
+    assert.equal(res.success, true);
+
+    await new Promise((resolve, reject) => {
+      const check = setInterval(() => {
+        const st = getReconstructionStatusJob();
+        if (st.status === 'completed') {
+          clearInterval(check);
+          resolve();
+        } else if (st.status === 'failed') {
+          clearInterval(check);
+          reject(new Error(st.error || 'Job failed'));
+        }
+      }, 20);
+    });
+
+    // Verify COLMAP stages (feature_extractor, matcher, mapper) were completely skipped
+    const stagesCalled = invokedStages.map((s) => s.stage);
+    assert.ok(!stagesCalled.includes('feature_extractor'), 'feature_extractor must be skipped on resume');
+    assert.ok(!stagesCalled.includes('mapper'), 'mapper must be skipped on resume');
+    // Verify InterfaceCOLMAP and DensifyPointCloud executed
+    assert.ok(invokedStages.some((s) => s.exe.toLowerCase().includes('interfacecolmap')), 'InterfaceCOLMAP must execute');
+    assert.ok(invokedStages.some((s) => s.exe.toLowerCase().includes('densifypointcloud')), 'DensifyPointCloud must execute');
   });
 });

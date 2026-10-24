@@ -309,7 +309,7 @@ export default function ProjectsHome({
               <span className="sample-indicator-tag">Design Preview Only</span>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-              Representative telemetry from prior design sprints • Non-destructive
+              Telemetry Preview • Non-destructive
             </span>
           </div>
 

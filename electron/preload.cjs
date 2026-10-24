@@ -123,9 +123,14 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
       customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
       customOpenmvsPath: typeof config.customOpenmvsPath === 'string' ? config.customOpenmvsPath.trim() : null,
       targetStage: typeof config.targetStage === 'string' ? config.targetStage.trim() : 'sparse',
-      resolutionLevel: typeof config.resolutionLevel === 'number' ? config.resolutionLevel : 1,
+      matcherType: typeof config.matcherType === 'string' ? config.matcherType.trim() : 'sequential',
+      overlap: typeof config.overlap === 'number' ? config.overlap : 10,
+      maxImageSize: typeof config.maxImageSize === 'number' ? config.maxImageSize : 2000,
+      resolutionLevel: typeof config.resolutionLevel === 'number' ? config.resolutionLevel : 2,
       maxResolution: typeof config.maxResolution === 'number' ? config.maxResolution : 1920,
-      numThreads: typeof config.numThreads === 'number' ? config.numThreads : 4,
+      numThreads: typeof config.numThreads === 'number' ? config.numThreads : undefined,
+      resume: Boolean(config.resume),
+      pipelinePreset: typeof config.pipelinePreset === 'string' ? config.pipelinePreset : undefined,
     };
     return ipcRenderer.invoke('reconstruction:start', sanitized);
   },

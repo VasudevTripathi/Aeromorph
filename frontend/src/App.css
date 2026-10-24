@@ -1020,7 +1020,7 @@
   box-shadow: 0 0 8px var(--accent-glow);
 }
 
-/* Collapsible Bottom Log Panel */
+/* Collapsible & Resizable Bottom Log Panel */
 .bottom-log-panel {
   position: absolute;
   bottom: 0;
@@ -1033,7 +1033,24 @@
   display: flex;
   flex-direction: column;
   z-index: 25;
-  transition: height 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.log-panel-resizer {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  z-index: 30;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.log-panel-resizer:hover,
+.log-panel-resizer.is-dragging {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
 }
 
 .log-panel-header {

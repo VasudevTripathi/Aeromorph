@@ -739,7 +739,7 @@ export default function ImportPhotographs({
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Wrench size={16} color="var(--accent)" />
             <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-              Photogrammetry Toolchain & Environment (Sprint 6A)
+              Photogrammetry Toolchain & Environment
             </span>
             {envState.environmentReady ? (
               <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.1)', color: 'var(--accent)', borderColor: 'rgba(213, 255, 101, 0.3)' }}>
@@ -967,12 +967,12 @@ export default function ImportPhotographs({
             </span>
             <span>
               {envState.environmentReady
-                ? 'Environment validated. (Reconstruction engine execution will be launched in Sprint 6B).'
+                ? 'Environment validated and ready for reconstruction.'
                 : 'Please locate missing executables above to enable reconstruction.'}
             </span>
           </div>
-          <span style={{ fontSize: '10.5px', fontFamily: 'var(--font-mono)' }}>
-            Sprint 6A: Environment Check Only
+          <span style={{ fontSize: '10.5px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+            System Environment Status
           </span>
         </div>
       </div>
@@ -1022,7 +1022,7 @@ export default function ImportPhotographs({
           <Film size={14} />
           <span>Import Video</span>
           <span style={{ fontSize: '10px', background: 'rgba(213, 255, 101, 0.2)', color: 'var(--accent)', padding: '1px 5px', borderRadius: '3px', fontWeight: 600 }}>
-            Sprint 8
+            Smart Extract
           </span>
         </button>
       </div>
@@ -1732,7 +1732,7 @@ export default function ImportPhotographs({
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Sparkles size={16} color="var(--accent)" />
               <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
-                Computer Vision Pre-flight Analysis (Sprint 7)
+                Computer Vision Pre-flight Analysis
               </span>
               {cvJob.running ? (
                 <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.15)', color: 'var(--accent)', borderColor: 'var(--accent)' }}>

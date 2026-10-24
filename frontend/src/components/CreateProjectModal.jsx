@@ -233,7 +233,7 @@ export default function CreateProjectModal({
                 Create Local Project
               </h2>
               <span className="modal-subtitle">
-                {isElectron ? 'Sprint 6A: Desktop Local Photogrammetry Workspace' : 'Browser-Compatible Project Workspace'}
+                {isElectron ? 'Desktop Local Photogrammetry Workspace' : 'Browser-Compatible Project Workspace'}
               </span>
             </div>
           </div>

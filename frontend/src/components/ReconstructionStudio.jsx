@@ -23,6 +23,12 @@ export default function ReconstructionStudio({
 }) {
   const [activeStage, setActiveStage] = useState('sparse_reconstruction');
   const [targetStage, setTargetStage] = useState('mesh'); // 'sparse' | 'dense' | 'mesh'
+  const [pipelinePreset, setPipelinePreset] = useState('balanced'); // 'fast' | 'balanced' | 'full'
+  const [matcherType, setMatcherType] = useState('sequential'); // 'sequential' | 'exhaustive'
+  const [numThreads, setNumThreads] = useState(8);
+  const [maxImageSize, setMaxImageSize] = useState(2000);
+  const [resolutionLevel, setResolutionLevel] = useState(2);
+  const [maxResolution, setMaxResolution] = useState(1920);
   const [jobStatus, setJobStatus] = useState('idle'); // 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
   const [activeStageKey, setActiveStageKey] = useState(null);
   const [activeStageLabel, setActiveStageLabel] = useState(null);
@@ -32,6 +38,29 @@ export default function ReconstructionStudio({
   const [reconstructionLogs, setReconstructionLogs] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
   const [modelStats, setModelStats] = useState(null);
+
+  const handlePresetChange = (preset) => {
+    setPipelinePreset(preset);
+    if (preset === 'fast') {
+      setMatcherType('sequential');
+      setMaxImageSize(1600);
+      setResolutionLevel(2);
+      setMaxResolution(1280);
+      setNumThreads(8);
+    } else if (preset === 'balanced') {
+      setMatcherType('sequential');
+      setMaxImageSize(2000);
+      setResolutionLevel(2);
+      setMaxResolution(1920);
+      setNumThreads(8);
+    } else if (preset === 'full') {
+      setMatcherType('exhaustive');
+      setMaxImageSize(-1);
+      setResolutionLevel(1);
+      setMaxResolution(1920);
+      setNumThreads(8);
+    }
+  };
 
   // Sync with current reconstruction state on mount
   useEffect(() => {
@@ -146,7 +175,7 @@ export default function ReconstructionStudio({
   };
 
   // Launch reconstruction pipeline
-  const handleStartPipeline = async () => {
+  const handleStartPipeline = async (options = {}) => {
     if (!currentProject) {
       alert('Please create or select an active project first.');
       return;
@@ -167,6 +196,8 @@ export default function ReconstructionStudio({
       if (!outputDir) return; // User canceled
     }
 
+    const isResume = Boolean(options && options.resume);
+
     // Reset logs, model stats, and error
     setReconstructionLogs([]);
     setErrorMessage(null);
@@ -178,9 +209,14 @@ export default function ReconstructionStudio({
       imageDir,
       outputDir,
       targetStage,
-      numThreads: 4,
-      resolutionLevel: 1,
-      maxResolution: 1920,
+      matcherType,
+      maxImageSize,
+      overlap: 10,
+      numThreads,
+      resolutionLevel,
+      maxResolution,
+      pipelinePreset,
+      resume: isResume,
     });
 
     if (!result.success) {
@@ -189,6 +225,8 @@ export default function ReconstructionStudio({
       alert(`Failed to start reconstruction: ${result.error}`);
     }
   };
+
+  const handleResumePipeline = () => handleStartPipeline({ resume: true });
 
   // Cancel running pipeline
   const handleCancelPipeline = async () => {
@@ -217,8 +255,15 @@ export default function ReconstructionStudio({
         activeStageKey={activeStageKey}
         targetStage={targetStage}
         onTargetStageChange={setTargetStage}
+        pipelinePreset={pipelinePreset}
+        onPipelinePresetChange={handlePresetChange}
+        matcherType={matcherType}
+        onMatcherTypeChange={setMatcherType}
+        numThreads={numThreads}
+        onNumThreadsChange={setNumThreads}
         elapsedSeconds={elapsedSeconds}
         onStartPipeline={handleStartPipeline}
+        onResumePipeline={handleResumePipeline}
         onCancelPipeline={handleCancelPipeline}
         onSelectWorkspace={handleSelectWorkspace}
       />
@@ -338,6 +383,7 @@ export default function ReconstructionStudio({
           totalStages={totalStages}
           elapsedSeconds={elapsedSeconds}
           errorMessage={errorMessage}
+          onResumePipeline={handleResumePipeline}
           onRetryPipeline={handleStartPipeline}
           onClearError={() => setErrorMessage(null)}
         />

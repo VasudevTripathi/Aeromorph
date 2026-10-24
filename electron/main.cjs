@@ -998,10 +998,13 @@ async function validateReconstructionDirectories(rawImageDir, rawOutputDir, opti
         return { valid: false, error: 'Specified run directory path exists but is not a directory.' };
       }
 
-      // Safeguard: Never overwrite pre-existing user files. Reject non-empty run directory.
+      // Safeguard: Never overwrite pre-existing user files. Reject non-empty run directory
+      // UNLESS resuming an already verified application-owned run.
       const entries = fs.readdirSync(resolvedRunDir);
       const nonManifestEntries = entries.filter((e) => e !== RUN_MANIFEST_FILENAME);
-      if (nonManifestEntries.length > 0) {
+      const isAppOwned = fs.existsSync(path.join(resolvedRunDir, RUN_MANIFEST_FILENAME));
+
+      if (nonManifestEntries.length > 0 && !(options?.resume && isAppOwned)) {
         return {
           valid: false,
           error: `Output run directory "${resolvedRunDir}" is not empty (${nonManifestEntries.length} items found). A clean or application-allocated run directory is required to prevent overwriting or deleting user files.`,
@@ -1023,16 +1026,37 @@ async function validateReconstructionDirectories(rawImageDir, rawOutputDir, opti
       return { valid: false, error: `Cannot create runs folder in workspace: ${err.message}` };
     }
 
-    resolvedRunDir = path.join(runsBaseDir, runJobId);
-    let counter = 1;
-    while (fs.existsSync(resolvedRunDir)) {
-      resolvedRunDir = path.join(runsBaseDir, `${runJobId}_${counter++}`);
+    // If resuming, attempt to pick up the most recent verified application-owned run
+    let resumedExisting = false;
+    if (options?.resume) {
+      try {
+        const runDirs = fs.readdirSync(runsBaseDir, { withFileTypes: true })
+          .filter((d) => d.isDirectory() && fs.existsSync(path.join(runsBaseDir, d.name, RUN_MANIFEST_FILENAME)))
+          .map((d) => {
+            const p = path.join(runsBaseDir, d.name);
+            return { name: d.name, fullPath: p, mtime: fs.statSync(p).mtimeMs };
+          })
+          .sort((a, b) => b.mtime - a.mtime);
+
+        if (runDirs.length > 0) {
+          resolvedRunDir = runDirs[0].fullPath;
+          resumedExisting = true;
+        }
+      } catch {}
     }
 
-    try {
-      fs.mkdirSync(resolvedRunDir, { recursive: true });
-    } catch (err) {
-      return { valid: false, error: `Cannot create isolated run directory: ${err.message}` };
+    if (!resumedExisting) {
+      resolvedRunDir = path.join(runsBaseDir, runJobId);
+      let counter = 1;
+      while (fs.existsSync(resolvedRunDir)) {
+        resolvedRunDir = path.join(runsBaseDir, `${runJobId}_${counter++}`);
+      }
+
+      try {
+        fs.mkdirSync(resolvedRunDir, { recursive: true });
+      } catch (err) {
+        return { valid: false, error: `Cannot create isolated run directory: ${err.message}` };
+      }
     }
   }
 
@@ -1112,24 +1136,69 @@ function cleanupTemporaryJobArtifacts(targetRunDir, options = {}) {
  * Build fixed argument arrays for COLMAP sparse stages (shell: false)
  * Targets Intel i3-1220P CPU-only execution without CUDA.
  */
-function buildColmapStageArgs(stage, { databasePath, imagePath, sparseOutputPath, inputModelPath, numThreads = 4 }) {
+function buildColmapStageArgs(stage, {
+  databasePath,
+  imagePath,
+  sparseOutputPath,
+  inputModelPath,
+  numThreads = 4,
+  maxImageSize,
+  overlap = 10,
+  maxNumFeatures,
+  maxTrials,
+  maxMatches,
+  sequentialThreads,
+}) {
   const threadsStr = String(numThreads);
   switch (stage) {
-    case 'feature_extractor':
-      return [
+    case 'feature_extractor': {
+      const args = [
         'feature_extractor',
         '--database_path', databasePath,
         '--image_path', imagePath,
         '--FeatureExtraction.use_gpu', '0',
         '--FeatureExtraction.num_threads', threadsStr,
       ];
-    case 'exhaustive_matcher':
-      return [
+      if (maxImageSize && Number.isInteger(maxImageSize) && maxImageSize > 0) {
+        args.push('--FeatureExtraction.max_image_size', String(maxImageSize));
+      }
+      if (maxNumFeatures && Number.isInteger(maxNumFeatures) && maxNumFeatures > 0) {
+        args.push('--SiftExtraction.max_num_features', String(maxNumFeatures));
+      }
+      return args;
+    }
+    case 'exhaustive_matcher': {
+      const args = [
         'exhaustive_matcher',
         '--database_path', databasePath,
         '--FeatureMatching.use_gpu', '0',
         '--FeatureMatching.num_threads', threadsStr,
       ];
+      if (maxMatches && Number.isInteger(maxMatches) && maxMatches > 0) {
+        args.push('--FeatureMatching.max_num_matches', String(maxMatches));
+      }
+      return args;
+    }
+    case 'sequential_matcher': {
+      const args = [
+        'sequential_matcher',
+        '--database_path', databasePath,
+        '--SequentialMatching.overlap', String(overlap && overlap > 0 ? overlap : 10),
+        '--SequentialMatching.quadratic_overlap', '1',
+        '--FeatureMatching.use_gpu', '0',
+        '--FeatureMatching.num_threads', threadsStr,
+      ];
+      if (sequentialThreads) {
+        args.push('--SequentialMatching.num_threads', threadsStr);
+      }
+      if (maxTrials && Number.isInteger(maxTrials) && maxTrials > 0) {
+        args.push('--TwoViewGeometry.max_num_trials', String(maxTrials));
+      }
+      if (maxMatches && Number.isInteger(maxMatches) && maxMatches > 0) {
+        args.push('--FeatureMatching.max_num_matches', String(maxMatches));
+      }
+      return args;
+    }
     case 'mapper':
       return [
         'mapper',
@@ -1187,9 +1256,11 @@ function buildOpenMvsStageArgs(stage, options = {}) {
     numThreads = 4,
     resolutionLevel = 1,
     maxResolution = 1920,
+    maxAllowedThreads,
   } = options;
 
-  const threads = Number.isInteger(numThreads) && numThreads >= 1 && numThreads <= 4 ? numThreads : 4;
+  const maxAllowed = Number.isInteger(maxAllowedThreads) && maxAllowedThreads >= 1 ? maxAllowedThreads : 4;
+  const threads = Number.isInteger(numThreads) && numThreads >= 1 && numThreads <= maxAllowed ? numThreads : maxAllowed;
   const threadsStr = String(threads);
 
   switch (stage) {
@@ -1519,6 +1590,159 @@ function parseColmapCamerasTxt(filePath) {
 }
 
 /**
+ * Ensures camera model in COLMAP sparse model directory is PINHOLE (model_id 1)
+ * or SIMPLE_PINHOLE (model_id 0) which are strictly required by OpenMVS InterfaceCOLMAP.
+ * Converts SIMPLE_RADIAL (model_id 2), RADIAL (model_id 3), or OPENCV (model_id 4) to PINHOLE.
+ */
+function ensurePinholeCameras(sparseDir) {
+  if (!sparseDir || !fs.existsSync(sparseDir)) return false;
+  let modified = false;
+
+  // 1. Process binary cameras.bin
+  const binPath = path.join(sparseDir, 'cameras.bin');
+  if (fs.existsSync(binPath)) {
+    try {
+      const buf = fs.readFileSync(binPath);
+      if (buf.length >= 8) {
+        const numCamerasBig = buf.readBigUInt64LE(0);
+        const numCameras = Number(numCamerasBig);
+        let offset = 8;
+        let bufModified = false;
+        const newBuf = Buffer.alloc(buf.length + 1024);
+        newBuf.writeBigUInt64LE(numCamerasBig, 0);
+        let newOffset = 8;
+
+        for (let i = 0; i < numCameras && offset < buf.length; i++) {
+          const cameraId = buf.readUInt32LE(offset);
+          const modelId = buf.readInt32LE(offset + 4);
+          const widthBig = buf.readBigUInt64LE(offset + 8);
+          const heightBig = buf.readBigUInt64LE(offset + 16);
+          const pOffset = offset + 24;
+
+          if (modelId === 2 && pOffset + 32 <= buf.length) {
+            // SIMPLE_RADIAL: f, cx, cy, k (4 doubles = 32 bytes) -> PINHOLE: fx, fy, cx, cy
+            const f = buf.readDoubleLE(pOffset);
+            const cx = buf.readDoubleLE(pOffset + 8);
+            const cy = buf.readDoubleLE(pOffset + 16);
+            newBuf.writeUInt32LE(cameraId, newOffset);
+            newBuf.writeInt32LE(1, newOffset + 4);
+            newBuf.writeBigUInt64LE(widthBig, newOffset + 8);
+            newBuf.writeBigUInt64LE(heightBig, newOffset + 16);
+            newBuf.writeDoubleLE(f, newOffset + 24);
+            newBuf.writeDoubleLE(f, newOffset + 32);
+            newBuf.writeDoubleLE(cx, newOffset + 40);
+            newBuf.writeDoubleLE(cy, newOffset + 48);
+            newOffset += 24 + 32;
+            offset += 24 + 32;
+            bufModified = true;
+          } else if (modelId === 3 && pOffset + 40 <= buf.length) {
+            // RADIAL: f, cx, cy, k1, k2 (5 doubles = 40 bytes) -> PINHOLE: fx, fy, cx, cy
+            const f = buf.readDoubleLE(pOffset);
+            const cx = buf.readDoubleLE(pOffset + 8);
+            const cy = buf.readDoubleLE(pOffset + 16);
+            newBuf.writeUInt32LE(cameraId, newOffset);
+            newBuf.writeInt32LE(1, newOffset + 4);
+            newBuf.writeBigUInt64LE(widthBig, newOffset + 8);
+            newBuf.writeBigUInt64LE(heightBig, newOffset + 16);
+            newBuf.writeDoubleLE(f, newOffset + 24);
+            newBuf.writeDoubleLE(f, newOffset + 32);
+            newBuf.writeDoubleLE(cx, newOffset + 40);
+            newBuf.writeDoubleLE(cy, newOffset + 48);
+            newOffset += 24 + 32;
+            offset += 24 + 40;
+            bufModified = true;
+          } else if (modelId === 4 && pOffset + 64 <= buf.length) {
+            // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2 (8 doubles = 64 bytes) -> PINHOLE: fx, fy, cx, cy
+            const fx = buf.readDoubleLE(pOffset);
+            const fy = buf.readDoubleLE(pOffset + 8);
+            const cx = buf.readDoubleLE(pOffset + 16);
+            const cy = buf.readDoubleLE(pOffset + 24);
+            newBuf.writeUInt32LE(cameraId, newOffset);
+            newBuf.writeInt32LE(1, newOffset + 4);
+            newBuf.writeBigUInt64LE(widthBig, newOffset + 8);
+            newBuf.writeBigUInt64LE(heightBig, newOffset + 16);
+            newBuf.writeDoubleLE(fx, newOffset + 24);
+            newBuf.writeDoubleLE(fy, newOffset + 32);
+            newBuf.writeDoubleLE(cx, newOffset + 40);
+            newBuf.writeDoubleLE(cy, newOffset + 48);
+            newOffset += 24 + 32;
+            offset += 24 + 64;
+            bufModified = true;
+          } else {
+            let paramBytes = 32;
+            if (modelId === 0) paramBytes = 24;
+            else if (modelId === 1) paramBytes = 32;
+            const totalCameraBytes = 24 + paramBytes;
+            if (offset + totalCameraBytes <= buf.length) {
+              buf.copy(newBuf, newOffset, offset, offset + totalCameraBytes);
+              newOffset += totalCameraBytes;
+              offset += totalCameraBytes;
+            } else {
+              break;
+            }
+          }
+        }
+
+        if (bufModified) {
+          fs.writeFileSync(binPath, newBuf.subarray(0, newOffset));
+          modified = true;
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Process text cameras.txt if present
+  const txtPath = path.join(sparseDir, 'cameras.txt');
+  if (fs.existsSync(txtPath)) {
+    try {
+      const content = fs.readFileSync(txtPath, 'utf8');
+      const lines = content.split(/\r?\n/);
+      let txtModified = false;
+      const updatedLines = lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return line;
+        const parts = trimmed.split(/\s+/);
+        if (parts.length >= 5) {
+          const id = parts[0];
+          const model = parts[1].toUpperCase();
+          const w = parts[2];
+          const h = parts[3];
+          if (model === 'SIMPLE_RADIAL' && parts.length >= 8) {
+            const f = parts[4];
+            const cx = parts[5];
+            const cy = parts[6];
+            txtModified = true;
+            return `${id} PINHOLE ${w} ${h} ${f} ${f} ${cx} ${cy}`;
+          }
+          if (model === 'RADIAL' && parts.length >= 9) {
+            const f = parts[4];
+            const cx = parts[5];
+            const cy = parts[6];
+            txtModified = true;
+            return `${id} PINHOLE ${w} ${h} ${f} ${f} ${cx} ${cy}`;
+          }
+          if (model === 'OPENCV' && parts.length >= 12) {
+            const fx = parts[4];
+            const fy = parts[5];
+            const cx = parts[6];
+            const cy = parts[7];
+            txtModified = true;
+            return `${id} PINHOLE ${w} ${h} ${fx} ${fy} ${cx} ${cy}`;
+          }
+        }
+        return line;
+      });
+      if (txtModified) {
+        fs.writeFileSync(txtPath, updatedLines.join('\n'), 'utf8');
+        modified = true;
+      }
+    } catch {}
+  }
+
+  return modified;
+}
+
+/**
  * Validate an exported PLY file.
  * Inspects header without loading entire multi-megabyte payload into memory.
  */
@@ -1759,6 +1983,9 @@ function verifySparseReconstructionOutput(sparseDir, totalInputImages = 0) {
  * Run asynchronous sparse reconstruction sequence
  */
 async function startSparseReconstructionJob(config = {}) {
+  const maxSysThreads = Math.max(1, (os.cpus()?.length || 4));
+  const defaultThreads = Math.min(8, Math.max(2, maxSysThreads - 2));
+
   const {
     imageDir,
     outputDir,
@@ -1766,9 +1993,12 @@ async function startSparseReconstructionJob(config = {}) {
     customColmapPath,
     customOpenmvsPath,
     targetStage: rawTargetStage = 'sparse',
-    resolutionLevel: rawResLevel = 1,
+    matcherType: rawMatcherType = 'exhaustive',
+    overlap: rawOverlap = 10,
+    maxImageSize: rawMaxImgSize = 2000,
+    resolutionLevel: rawResLevel,
     maxResolution: rawMaxRes = 1920,
-    numThreads: rawNumThreads = 4,
+    numThreads: rawNumThreads,
     spawnProcess: customSpawn,
     colmapExe: customColmapExe,
     customInterfaceColmapExe,
@@ -1777,9 +2007,12 @@ async function startSparseReconstructionJob(config = {}) {
   } = config;
 
   const targetStage = ['sparse', 'dense', 'mesh'].includes(rawTargetStage) ? rawTargetStage : 'sparse';
-  const resolutionLevel = Number.isInteger(rawResLevel) && rawResLevel >= 1 && rawResLevel <= 4 ? rawResLevel : 1;
+  const matcherType = rawMatcherType === 'sequential' ? 'sequential' : 'exhaustive';
+  const overlap = Number.isInteger(rawOverlap) && rawOverlap >= 2 && rawOverlap <= 50 ? rawOverlap : 10;
+  const maxImageSize = Number.isInteger(rawMaxImgSize) && rawMaxImgSize > 0 ? rawMaxImgSize : (rawMaxImgSize === -1 ? -1 : 2000);
+  const resolutionLevel = Number.isInteger(rawResLevel) && rawResLevel >= 1 && rawResLevel <= 4 ? rawResLevel : (rawTargetStage === 'mesh' ? 2 : 1);
   const maxResolution = Number.isInteger(rawMaxRes) && rawMaxRes >= 640 && rawMaxRes <= 2560 ? rawMaxRes : 1920;
-  const numThreads = Number.isInteger(rawNumThreads) && rawNumThreads >= 1 && rawNumThreads <= 4 ? rawNumThreads : 4;
+  const numThreads = Number.isInteger(rawNumThreads) && rawNumThreads >= 1 && rawNumThreads <= maxSysThreads ? rawNumThreads : defaultThreads;
 
   const jobId = typeof config.jobId === 'string' && config.jobId.trim()
     ? config.jobId.trim()
@@ -1789,6 +2022,7 @@ async function startSparseReconstructionJob(config = {}) {
   const dirCheck = await validateReconstructionDirectories(imageDir, outputDir, {
     runDir: explicitRunDir,
     jobId,
+    resume: Boolean(config.resume),
   });
   if (!dirCheck.valid) {
     return { success: false, error: dirCheck.error };
@@ -1914,6 +2148,7 @@ async function startSparseReconstructionJob(config = {}) {
   };
 
   appendJobLog('setup', `Starting Reconstruction Pipeline: ${dirCheck.imageCount} photographs, target: ${targetStage.toUpperCase()}`);
+  appendJobLog('setup', `Matcher: ${matcherType.toUpperCase()} (overlap: ${overlap}), SIFT Max Image Size: ${maxImageSize > 0 ? maxImageSize + 'px' : 'Native Raw'}`);
   appendJobLog('setup', `COLMAP: ${colmapExe} (version: ${colmapVersion || 'detected'})`);
   if (targetStage === 'dense' || targetStage === 'mesh') {
     appendJobLog('setup', `OpenMVS InterfaceCOLMAP: ${interfaceColmapExe}`);
@@ -1922,7 +2157,7 @@ async function startSparseReconstructionJob(config = {}) {
       appendJobLog('setup', `OpenMVS ReconstructMesh: ${reconstructMeshExe}`);
     }
   }
-  appendJobLog('setup', `Concurrency: ${numThreads} CPU threads, Profile: Conservative 8 GB RAM`);
+  appendJobLog('setup', `Concurrency: ${numThreads} CPU threads (system logical cores: ${maxSysThreads})`);
   appendJobLog('setup', `Workspace: ${dirCheck.workspaceDir}`);
   appendJobLog('setup', `Isolated Run Directory: ${runDir}`);
 
@@ -2033,45 +2268,83 @@ async function startSparseReconstructionJob(config = {}) {
 
   // Run stages asynchronously in background
   (async () => {
+    const matcherKey = matcherType === 'sequential' ? 'sequential_matcher' : 'exhaustive_matcher';
+    const matcherLabel = matcherType === 'sequential' ? 'Feature Matching (Sequential)' : 'Feature Matching (Exhaustive)';
     const colmapStages = [
       { key: 'feature_extractor', label: 'Feature Extraction (SIFT)', num: '01' },
-      { key: 'exhaustive_matcher', label: 'Feature Matching (Exhaustive)', num: '02' },
+      { key: matcherKey, label: matcherLabel, num: '02' },
       { key: 'mapper', label: 'Sparse Point Cloud (Mapper)', num: '03' },
     ];
 
     try {
-      for (let i = 0; i < colmapStages.length; i++) {
-        if (activeReconstructionJob.status === 'cancelled') {
-          appendJobLog('system', 'Job was cancelled before stage execution.');
-          break;
+      // Resume check: determine if sparse reconstruction already exists in runDir
+      let skipColmapStages = false;
+      let existingVerify = null;
+
+      if (config?.resume) {
+        appendJobLog('setup', `[RESUME] Inspecting existing intermediate artifacts in: ${runDir}`);
+        const checkSparse = verifySparseReconstructionOutput(sparseDir, dirCheck.imageCount);
+        if (checkSparse.valid) {
+          existingVerify = checkSparse;
+          skipColmapStages = true;
+          appendJobLog(
+            'mapper',
+            `[RESUME] Found existing verified sparse model in ${checkSparse.modelDir} (${checkSparse.pointsCount.toLocaleString()} points, ${checkSparse.registeredImages}/${dirCheck.imageCount} images registered). Skipping feature extraction, matching, and mapper!`
+          );
+        } else if (fs.existsSync(dbPath)) {
+          try {
+            const dbStat = fs.statSync(dbPath);
+            if (dbStat.size > 100 * 1024) {
+              appendJobLog('setup', `[RESUME] Found existing feature database (${(dbStat.size / (1024 * 1024)).toFixed(1)} MB). COLMAP will resume and reuse extracted features.`);
+            }
+          } catch {}
         }
+      }
 
-        const currentStage = colmapStages[i];
-        activeReconstructionJob.stage = currentStage.key;
-        activeReconstructionJob.stageLabel = currentStage.label;
-        activeReconstructionJob.stageIndex = i + 1;
+      if (!skipColmapStages) {
+        for (let i = 0; i < colmapStages.length; i++) {
+          if (activeReconstructionJob.status === 'cancelled') {
+            appendJobLog('system', 'Job was cancelled before stage execution.');
+            break;
+          }
 
-        emitReconstructionProgress({
-          jobId,
-          status: 'running',
-          stage: currentStage.key,
-          stageLabel: currentStage.label,
-          stageIndex: i + 1,
-          totalStages,
-          elapsedMs: Date.now() - activeReconstructionJob.startTime,
-          runDir,
-        });
+          const currentStage = colmapStages[i];
+          activeReconstructionJob.stage = currentStage.key;
+          activeReconstructionJob.stageLabel = currentStage.label;
+          activeReconstructionJob.stageIndex = i + 1;
 
-        appendJobLog(currentStage.key, `--- Starting Stage ${currentStage.num}: ${currentStage.label} ---`);
+          emitReconstructionProgress({
+            jobId,
+            status: 'running',
+            stage: currentStage.key,
+            stageLabel: currentStage.label,
+            stageIndex: i + 1,
+            totalStages,
+            elapsedMs: Date.now() - activeReconstructionJob.startTime,
+            runDir,
+          });
 
-        const args = buildColmapStageArgs(currentStage.key, {
-          databasePath: dbPath,
-          imagePath: dirCheck.imageDir,
-          sparseOutputPath: sparseDir,
-          numThreads,
-        });
+          appendJobLog(currentStage.key, `--- Starting Stage ${currentStage.num}: ${currentStage.label} ---`);
 
-        await runSubprocess(colmapExe, args, currentStage.key);
+          const maxNumFeatures = config.pipelinePreset === 'fast' ? 4096 : (config.pipelinePreset === 'full' ? 8192 : 6144);
+          const maxTrials = config.pipelinePreset === 'fast' ? 2500 : (config.pipelinePreset === 'full' ? 10000 : 5000);
+          const maxMatches = config.pipelinePreset === 'fast' ? 8192 : (config.pipelinePreset === 'full' ? 32768 : 16384);
+
+          const args = buildColmapStageArgs(currentStage.key, {
+            databasePath: dbPath,
+            imagePath: dirCheck.imageDir,
+            sparseOutputPath: sparseDir,
+            numThreads,
+            maxImageSize,
+            overlap,
+            maxNumFeatures,
+            maxTrials,
+            maxMatches,
+            sequentialThreads: true,
+          });
+
+          await runSubprocess(colmapExe, args, currentStage.key);
+        }
       }
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
@@ -2095,15 +2368,17 @@ async function startSparseReconstructionJob(config = {}) {
 
       // Verify sparse model output against COLMAP models
       appendJobLog('mapper', 'Verifying sparse reconstruction model output...');
-      const verifyRes = verifySparseReconstructionOutput(sparseDir, dirCheck.imageCount);
+      const verifyRes = existingVerify || verifySparseReconstructionOutput(sparseDir, dirCheck.imageCount);
       if (!verifyRes.valid) {
         throw new Error(verifyRes.error);
       }
 
-      appendJobLog(
-        'mapper',
-        `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsCount.toLocaleString()} 3D points, ${verifyRes.registeredImages}/${dirCheck.imageCount} images registered, quality: ${verifyRes.qualityStatus})`
-      );
+      if (!existingVerify) {
+        appendJobLog(
+          'mapper',
+          `Sparse reconstruction verified: Model in ${verifyRes.modelDir} (${verifyRes.pointsCount.toLocaleString()} 3D points, ${verifyRes.registeredImages}/${dirCheck.imageCount} images registered, quality: ${verifyRes.qualityStatus})`
+        );
+      }
 
       if (verifyRes.warning) {
         appendJobLog('mapper', `Quality notice: ${verifyRes.warning}`);
@@ -2116,26 +2391,35 @@ async function startSparseReconstructionJob(config = {}) {
         return;
       }
 
-      // Export model to PLY for 3D Viewport
+      // Export model to PLY for 3D Viewport (or reuse existing on resume)
       const expectedPly = path.join(runDir, 'sparse.ply');
-      if (fs.existsSync(expectedPly)) {
-        try {
-          fs.unlinkSync(expectedPly);
-        } catch {}
+      let sparsePlyValid = false;
+      if (config?.resume && fs.existsSync(expectedPly)) {
+        const existingPlyCheck = validateExportedPly(expectedPly);
+        if (existingPlyCheck.valid) {
+          sparsePlyValid = true;
+          appendJobLog('export', `Reusing existing verified sparse PLY: ${expectedPly} (${existingPlyCheck.vertexCount.toLocaleString()} vertices)`);
+        }
       }
 
-      appendJobLog('export', 'Converting sparse model to PLY for 3D viewport preview...');
-      const convArgs = buildColmapStageArgs('model_converter', {
-        databasePath: dbPath,
-        imagePath: dirCheck.imageDir,
-        sparseOutputPath: sparseDir,
-        inputModelPath: verifyRes.modelDir,
-      });
+      if (!sparsePlyValid && fs.existsSync(expectedPly)) {
+        try { fs.unlinkSync(expectedPly); } catch {}
+      }
 
-      try {
-        await runSubprocess(colmapExe, convArgs, 'export');
-      } catch (convErr) {
-        throw new Error(`COLMAP model_converter failed to export sparse.ply: ${convErr.message}`);
+      if (!sparsePlyValid) {
+        appendJobLog('export', 'Converting sparse model to PLY for 3D viewport preview...');
+        const convArgs = buildColmapStageArgs('model_converter', {
+          databasePath: dbPath,
+          imagePath: dirCheck.imageDir,
+          sparseOutputPath: sparseDir,
+          inputModelPath: verifyRes.modelDir,
+        });
+
+        try {
+          await runSubprocess(colmapExe, convArgs, 'export');
+        } catch (convErr) {
+          throw new Error(`COLMAP model_converter failed to export sparse.ply: ${convErr.message}`);
+        }
       }
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
@@ -2232,33 +2516,81 @@ async function startSparseReconstructionJob(config = {}) {
 
       appendJobLog('interface_colmap', '--- Starting Stage 04: OpenMVS Scene Preparation (InterfaceCOLMAP) ---');
       const scenePath = path.join(runDir, 'scene.mvs');
-      if (fs.existsSync(scenePath)) {
-        try { fs.unlinkSync(scenePath); } catch {}
-      }
 
-      // OpenMVS InterfaceCOLMAP requires the input directory to contain a 'sparse' subfolder
-      // containing cameras, images, and points3D files.
-      const omvsInputDir = path.join(runDir, 'omvs_input');
-      const omvsSparseDir = path.join(omvsInputDir, 'sparse');
-      fs.mkdirSync(omvsSparseDir, { recursive: true });
-
-      const colmapModelFiles = ['cameras.bin', 'images.bin', 'points3D.bin', 'cameras.txt', 'images.txt', 'points3D.txt'];
-      for (const fname of colmapModelFiles) {
-        const src = path.join(verifyRes.modelDir, fname);
-        if (fs.existsSync(src)) {
-          fs.copyFileSync(src, path.join(omvsSparseDir, fname));
+      // Check if scene.mvs already exists and is valid from previous run
+      let skipScenePrep = false;
+      if (config?.resume) {
+        const sceneCheck = verifyOpenMvsScene(scenePath);
+        if (sceneCheck.valid) {
+          skipScenePrep = true;
+          appendJobLog('interface_colmap', `[RESUME] Found existing verified OpenMVS scene: scene.mvs (${sceneCheck.sizeBytes} bytes). Skipping Stage 04.`);
         }
       }
 
-      const interfaceArgs = buildOpenMvsStageArgs('interface_colmap', {
-        colmapModelDir: omvsInputDir,
-        scenePath,
-        imageDir: dirCheck.imageDir,
-        numThreads,
-      });
+      if (!skipScenePrep) {
+        if (fs.existsSync(scenePath)) {
+          try { fs.unlinkSync(scenePath); } catch {}
+        }
 
-      appendJobLog('interface_colmap', `Converting COLMAP model (${verifyRes.modelDir}) to OpenMVS scene (${scenePath})...`);
-      await runSubprocess(interfaceColmapExe, interfaceArgs, 'interface_colmap');
+        // OpenMVS InterfaceCOLMAP requires the input directory to contain a 'sparse' subfolder
+        // containing cameras, images, and points3D files with PINHOLE camera model.
+        const omvsInputDir = path.join(runDir, 'omvs_input');
+        const omvsSparseDir = path.join(omvsInputDir, 'sparse');
+        const omvsImagesDir = path.join(omvsInputDir, 'images');
+        fs.mkdirSync(omvsSparseDir, { recursive: true });
+
+        const colmapModelFiles = ['cameras.bin', 'images.bin', 'points3D.bin', 'cameras.txt', 'images.txt', 'points3D.txt'];
+        for (const fname of colmapModelFiles) {
+          const src = path.join(verifyRes.modelDir, fname);
+          if (fs.existsSync(src)) {
+            fs.copyFileSync(src, path.join(omvsSparseDir, fname));
+          }
+        }
+
+        // Safety guarantee: Convert camera model to PINHOLE in omvs_input/sparse before InterfaceCOLMAP
+        ensurePinholeCameras(omvsSparseDir);
+
+        // Run COLMAP image_undistorter for optimal OpenMVS camera geometry if colmap is available
+        try {
+          if (colmapExe && fs.existsSync(colmapExe)) {
+            appendJobLog('interface_colmap', 'Running COLMAP image_undistorter for optimal OpenMVS pinhole geometry...');
+            const undistortArgs = [
+              'image_undistorter',
+              '--image_path', dirCheck.imageDir,
+              '--input_path', verifyRes.modelDir,
+              '--output_path', omvsInputDir,
+              '--output_type', 'COLMAP',
+            ];
+            if (maxImageSize && Number.isInteger(maxImageSize) && maxImageSize > 0) {
+              undistortArgs.push('--max_image_size', String(maxImageSize));
+            }
+            if (numThreads && Number.isInteger(numThreads) && numThreads > 0) {
+              undistortArgs.push('--num_threads', String(numThreads));
+            }
+            await runSubprocess(colmapExe, undistortArgs, 'interface_colmap');
+            // Ensure pinhole camera model on undistorted output
+            ensurePinholeCameras(omvsSparseDir);
+          }
+        } catch (undistortErr) {
+          appendJobLog('interface_colmap', `Notice: using direct pinhole conversion for OpenMVS (${undistortErr.message})`);
+          ensurePinholeCameras(omvsSparseDir);
+        }
+
+        const actualImageFolder = fs.existsSync(omvsImagesDir) && fs.readdirSync(omvsImagesDir).length > 0
+          ? omvsImagesDir
+          : dirCheck.imageDir;
+
+        const interfaceArgs = buildOpenMvsStageArgs('interface_colmap', {
+          colmapModelDir: omvsInputDir,
+          scenePath,
+          imageDir: actualImageFolder,
+          numThreads,
+          maxAllowedThreads: numThreads,
+        });
+
+        appendJobLog('interface_colmap', `Converting COLMAP model (${verifyRes.modelDir}) to OpenMVS scene (${scenePath})...`);
+        await runSubprocess(interfaceColmapExe, interfaceArgs, 'interface_colmap');
+      }
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         cleanupTemporaryJobArtifacts(runDir, { jobId });
@@ -2299,26 +2631,39 @@ async function startSparseReconstructionJob(config = {}) {
       appendJobLog('densify_point_cloud', '--- Starting Stage 05: Dense Point Cloud (DensifyPointCloud) ---');
       const denseScenePath = path.join(runDir, 'scene_dense.mvs');
       const densePlyPath = path.join(runDir, 'scene_dense.ply');
-      if (fs.existsSync(denseScenePath)) {
-        try { fs.unlinkSync(denseScenePath); } catch {}
-      }
-      if (fs.existsSync(densePlyPath)) {
-        try { fs.unlinkSync(densePlyPath); } catch {}
+
+      let skipDensify = false;
+      if (config?.resume && targetStage === 'mesh') {
+        const existingDense = verifyOpenMvsDenseOutput(denseScenePath, densePlyPath);
+        if (existingDense.valid) {
+          skipDensify = true;
+          appendJobLog('densify_point_cloud', `[RESUME] Found existing verified dense point cloud (${existingDense.vertexCount.toLocaleString()} vertices). Skipping Stage 05.`);
+        }
       }
 
-      const densifyArgs = buildOpenMvsStageArgs('densify_point_cloud', {
-        scenePath,
-        denseScenePath,
-        resolutionLevel,
-        maxResolution,
-        numThreads,
-      });
+      if (!skipDensify) {
+        if (fs.existsSync(denseScenePath)) {
+          try { fs.unlinkSync(denseScenePath); } catch {}
+        }
+        if (fs.existsSync(densePlyPath)) {
+          try { fs.unlinkSync(densePlyPath); } catch {}
+        }
 
-      appendJobLog(
-        'densify_point_cloud',
-        `Running DensifyPointCloud (resolution-level: ${resolutionLevel}, max-res: ${maxResolution}, threads: ${numThreads})...`
-      );
-      await runSubprocess(densifyExe, densifyArgs, 'densify_point_cloud');
+        const densifyArgs = buildOpenMvsStageArgs('densify_point_cloud', {
+          scenePath,
+          denseScenePath,
+          resolutionLevel,
+          maxResolution,
+          numThreads,
+          maxAllowedThreads: numThreads,
+        });
+
+        appendJobLog(
+          'densify_point_cloud',
+          `Running DensifyPointCloud (resolution-level: ${resolutionLevel}, max-res: ${maxResolution}, threads: ${numThreads})...`
+        );
+        await runSubprocess(densifyExe, densifyArgs, 'densify_point_cloud');
+      }
 
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         cleanupTemporaryJobArtifacts(runDir, { jobId });
@@ -2419,6 +2764,7 @@ async function startSparseReconstructionJob(config = {}) {
         denseScenePath,
         meshPlyPath,
         numThreads,
+        maxAllowedThreads: numThreads,
       });
 
       appendJobLog('reconstruct_mesh', `Running ReconstructMesh on ${denseScenePath} (export-type: ply, threads: ${numThreads})...`);
@@ -3885,6 +4231,9 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
     }
 
     const targetStage = ['sparse', 'dense', 'mesh'].includes(config.targetStage) ? config.targetStage : 'sparse';
+    const maxSysThreads = Math.max(1, (os.cpus()?.length || 4));
+    const defaultThreads = Math.min(8, Math.max(2, maxSysThreads - 2));
+
     const sanitized = {
       imageDir: typeof config.imageDir === 'string' ? config.imageDir.trim() : '',
       outputDir: typeof config.outputDir === 'string' ? config.outputDir.trim() : '',
@@ -3892,9 +4241,14 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
       customColmapPath: typeof config.customColmapPath === 'string' ? config.customColmapPath.trim() : null,
       customOpenmvsPath: typeof config.customOpenmvsPath === 'string' ? config.customOpenmvsPath.trim() : null,
       targetStage,
-      resolutionLevel: Number.isInteger(config.resolutionLevel) && config.resolutionLevel >= 1 && config.resolutionLevel <= 4 ? config.resolutionLevel : 1,
+      matcherType: config.matcherType === 'exhaustive' ? 'exhaustive' : 'sequential',
+      overlap: Number.isInteger(config.overlap) && config.overlap >= 2 && config.overlap <= 50 ? config.overlap : 10,
+      maxImageSize: Number.isInteger(config.maxImageSize) && config.maxImageSize > 0 ? config.maxImageSize : (config.maxImageSize === -1 ? -1 : 2000),
+      resolutionLevel: Number.isInteger(config.resolutionLevel) && config.resolutionLevel >= 1 && config.resolutionLevel <= 4 ? config.resolutionLevel : (targetStage === 'mesh' ? 2 : 1),
       maxResolution: Number.isInteger(config.maxResolution) && config.maxResolution >= 640 && config.maxResolution <= 2560 ? config.maxResolution : 1920,
-      numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= 4 ? config.numThreads : 4,
+      numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= maxSysThreads ? config.numThreads : defaultThreads,
+      resume: Boolean(config.resume),
+      pipelinePreset: typeof config.pipelinePreset === 'string' ? config.pipelinePreset : 'balanced',
     };
 
     return await startSparseReconstructionJob(sanitized);
@@ -4157,6 +4511,7 @@ module.exports = {
   inspectOpenMvsModules,
   checkFreeDiskSpace,
   buildOpenMvsStageArgs,
+  ensurePinholeCameras,
   verifyOpenMvsScene,
   verifyOpenMvsDenseOutput,
   verifyOpenMvsMeshOutput,

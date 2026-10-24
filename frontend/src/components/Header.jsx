@@ -19,7 +19,7 @@ export default function Header({ currentScreen, setCurrentScreen, currentProject
         <div className="brand-title-group">
           <div className="brand-name">
             Aeromorph
-            <span className="brand-version">Sprint 6A</span>
+            <span className="brand-version">v1.0 Pro</span>
           </div>
           <span className="brand-subtitle">3D Reconstruction Studio</span>
         </div>

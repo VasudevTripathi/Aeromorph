@@ -34,6 +34,7 @@ export default function Viewport3D({
   totalStages = 6,
   elapsedSeconds = 0,
   errorMessage = null,
+  onResumePipeline = null,
   onRetryPipeline = null,
   onClearError = null,
 }) {
@@ -1255,17 +1256,34 @@ export default function Viewport3D({
               </span>
             )}
 
-            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              {onResumePipeline && (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={onResumePipeline}
+                  style={{ background: 'var(--accent)', color: '#000', fontWeight: 600 }}
+                  title="Resume from where the error occurred without repeating finished steps"
+                >
+                  <Sparkles size={12} />
+                  <span>Resume from Checkpoint</span>
+                </button>
+              )}
               {onRetryPipeline && (
-                <button type="button" className="btn-primary" onClick={onRetryPipeline}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={onRetryPipeline}
+                  title="Restart entire reconstruction from the beginning"
+                >
                   <RotateCcw size={12} />
-                  <span>Reset &amp; Retry Pipeline</span>
+                  <span>Restart from Beginning</span>
                 </button>
               )}
               {onClearError && errorMessage && (
                 <button
                   type="button"
-                  className="btn-secondary"
+                  className="btn-ghost"
                   onClick={() => {
                     onClearError();
                     setManualViewOverride('loaded');

@@ -6,7 +6,47 @@ export default function LogPanel({ externalLogs = null, currentStage = null, job
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [internalLogs, setInternalLogs] = useState([]);
+  const [panelHeight, setPanelHeight] = useState(230);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartY = useRef(0);
+  const dragStartHeight = useRef(230);
   const logsEndRef = useRef(null);
+
+  // Resize drag handle (similar to IDE terminals)
+  const handleResizeStart = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+    dragStartY.current = e.clientY;
+    dragStartHeight.current = panelHeight;
+
+    const handleMouseMove = (moveEvent) => {
+      const deltaY = dragStartY.current - moveEvent.clientY; // drag up increases height
+      const maxHeight = Math.max(300, Math.round(window.innerHeight * 0.75));
+      const nextHeight = Math.min(maxHeight, Math.max(90, dragStartHeight.current + deltaY));
+      setPanelHeight(nextHeight);
+      setIsExpanded(true);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleToggleMaximize = (e) => {
+    e.stopPropagation();
+    if (panelHeight > 350) {
+      setPanelHeight(230);
+    } else {
+      setPanelHeight(Math.round(window.innerHeight * 0.65));
+    }
+    setIsExpanded(true);
+  };
 
   // Subscribe to live reconstruction logs if externalLogs not provided
   useEffect(() => {
@@ -68,7 +108,7 @@ export default function LogPanel({ externalLogs = null, currentStage = null, job
       return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: 'var(--accent)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
           <CheckCircle2 size={11} />
-          <span>SPARSE RECONSTRUCTION COMPLETED</span>
+          <span>RECONSTRUCTION COMPLETED</span>
         </span>
       );
     }
@@ -90,7 +130,7 @@ export default function LogPanel({ externalLogs = null, currentStage = null, job
     }
     return (
       <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-        [COLMAP CPU Engine Ready • Sprint 6B]
+        [COLMAP &amp; OpenMVS Engine Ready]
       </span>
     );
   };
@@ -98,9 +138,20 @@ export default function LogPanel({ externalLogs = null, currentStage = null, job
   return (
     <div
       className="bottom-log-panel"
-      style={{ height: isExpanded ? '190px' : '34px' }}
+      style={{
+        height: isExpanded ? `${panelHeight}px` : '34px',
+        transition: isDragging ? 'none' : 'height 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+      }}
       aria-label="Processing Status & Logs"
     >
+      {/* IDE Terminal Top Resizer Bar */}
+      <div
+        className={`log-panel-resizer ${isDragging ? 'is-dragging' : ''}`}
+        onMouseDown={handleResizeStart}
+        onDoubleClick={handleToggleMaximize}
+        title="Drag up/down to resize terminal console (Double-click to expand/reset)"
+      />
+
       {/* Header bar / Click to Toggle */}
       <div
         className="log-panel-header"
