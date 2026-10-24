@@ -177,8 +177,8 @@ export default function PipelineSidebar({
 
       {/* Target Stage Depth Selector & Performance Controls */}
       <div style={{ padding: '8px 12px', background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)', fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ color: 'var(--text-muted)' }}>Pipeline Target:</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Pipeline Target:</span>
           <select
             value={targetStage}
             onChange={(e) => onTargetStageChange && onTargetStageChange(e.target.value)}
@@ -188,9 +188,12 @@ export default function PipelineSidebar({
               color: 'var(--accent, #38bdf8)',
               border: '1px solid var(--border-subtle)',
               borderRadius: '4px',
-              padding: '2px 6px',
+              padding: '3px 6px',
               fontSize: '11px',
               cursor: isRunning ? 'not-allowed' : 'pointer',
+              maxWidth: '150px',
+              width: '100%',
+              textOverflow: 'ellipsis',
             }}
           >
             <option value="mesh">Mesh (Dense + Mesh)</option>
@@ -200,8 +203,8 @@ export default function PipelineSidebar({
         </div>
 
         {/* Speed / Quality Preset */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ color: 'var(--text-muted)' }}>Speed Preset:</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Speed Preset:</span>
           <select
             value={pipelinePreset}
             onChange={(e) => onPipelinePresetChange && onPipelinePresetChange(e.target.value)}
@@ -211,20 +214,24 @@ export default function PipelineSidebar({
               color: pipelinePreset === 'fast' ? 'var(--accent)' : 'var(--text-primary)',
               border: '1px solid var(--border-subtle)',
               borderRadius: '4px',
-              padding: '2px 6px',
+              padding: '3px 6px',
               fontSize: '11px',
               cursor: isRunning ? 'not-allowed' : 'pointer',
+              maxWidth: '150px',
+              width: '100%',
+              textOverflow: 'ellipsis',
             }}
+            title="Processing Speed Preset"
           >
-            <option value="fast">⚡ Fast (Manual speed: 1000px, 3 views, 1 level)</option>
-            <option value="balanced">⚖ Balanced (Manual fast MVS: 1000px, 3 views, 1 level)</option>
-            <option value="full">🎯 Full Precision (1920px, 5 views, 2 levels)</option>
+            <option value="fast">⚡ Fast (Manual 1000px)</option>
+            <option value="balanced">⚖ Balanced (1000px)</option>
+            <option value="full">🎯 Full (1920px)</option>
           </select>
         </div>
 
         {/* Matcher Strategy */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ color: 'var(--text-muted)' }}>Matcher Mode:</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Matcher Mode:</span>
           <select
             value={matcherType}
             onChange={(e) => onMatcherTypeChange && onMatcherTypeChange(e.target.value)}
@@ -234,9 +241,12 @@ export default function PipelineSidebar({
               color: 'var(--text-primary)',
               border: '1px solid var(--border-subtle)',
               borderRadius: '4px',
-              padding: '2px 6px',
+              padding: '3px 6px',
               fontSize: '11px',
               cursor: isRunning ? 'not-allowed' : 'pointer',
+              maxWidth: '150px',
+              width: '100%',
+              textOverflow: 'ellipsis',
             }}
           >
             <option value="sequential">Sequential (Overlap 10)</option>

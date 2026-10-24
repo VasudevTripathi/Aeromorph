@@ -1364,9 +1364,14 @@ function buildOpenMvsStageArgs(stage, options = {}) {
     subResolutionLevels,
     iters,
     geometricIters,
+    estimateRoi,
+    cropToRoi,
+    towerMode,
+    fusionMode,
+    fusionFilter,
   } = options;
 
-  const maxAllowed = Number.isInteger(maxAllowedThreads) && maxAllowedThreads >= 1 ? maxAllowedThreads : 4;
+  const maxAllowed = Number.isInteger(maxAllowedThreads) && maxAllowedThreads >= 1 ? Math.min(4, maxAllowedThreads) : 4;
   const threads = Number.isInteger(numThreads) && numThreads >= 1 && numThreads <= maxAllowed ? numThreads : maxAllowed;
   const threadsStr = String(threads);
 
@@ -1420,6 +1425,21 @@ function buildOpenMvsStageArgs(stage, options = {}) {
       }
       if (Number.isInteger(geometricIters) && geometricIters >= 0 && geometricIters <= 10) {
         args.push('--geometric-iters', String(geometricIters));
+      }
+      if (Number.isInteger(estimateRoi)) {
+        args.push('--estimate-roi', String(estimateRoi));
+      }
+      if (Number.isInteger(cropToRoi)) {
+        args.push('--crop-to-roi', String(cropToRoi));
+      }
+      if (Number.isInteger(towerMode)) {
+        args.push('--tower-mode', String(towerMode));
+      }
+      if (Number.isInteger(fusionMode)) {
+        args.push('--fusion-mode', String(fusionMode));
+      }
+      if (Number.isInteger(fusionFilter)) {
+        args.push('--fusion-filter', String(fusionFilter));
       }
       return args;
     }
@@ -2920,23 +2940,29 @@ async function startSparseReconstructionJob(config = {}) {
           try { fs.unlinkSync(densePlyPath); } catch {}
         }
 
+        const safeDensifyThreads = Math.min(4, Math.max(1, numThreads || 4));
         const densifyArgs = buildOpenMvsStageArgs('densify_point_cloud', {
           scenePath,
           denseScenePath,
           resolutionLevel,
           maxResolution,
-          numThreads,
-          maxAllowedThreads: numThreads,
+          numThreads: safeDensifyThreads,
+          maxAllowedThreads: 4,
           minResolution,
           numberViews,
           subResolutionLevels,
           iters,
           geometricIters,
+          estimateRoi: 0,
+          cropToRoi: 0,
+          towerMode: 0,
+          fusionMode: 0,
+          fusionFilter: 1,
         });
 
         appendJobLog(
           'densify_point_cloud',
-          `Running DensifyPointCloud (resLevel: ${resolutionLevel}, maxRes: ${maxResolution}, minRes: ${minResolution}, views: ${numberViews}, subLevels: ${subResolutionLevels}, iters: ${iters}, geoIters: ${geometricIters}, threads: ${numThreads})...`
+          `Running DensifyPointCloud (resLevel: ${resolutionLevel}, maxRes: ${maxResolution}, minRes: ${minResolution}, views: ${numberViews}, subLevels: ${subResolutionLevels}, iters: ${iters}, geoIters: ${geometricIters}, threads: ${safeDensifyThreads}, safeRoi: off)...`
         );
         await runSubprocess(densifyExe, densifyArgs, 'densify_point_cloud');
       }
