@@ -28,7 +28,7 @@ export default function ReconstructionStudio({
   const [numThreads, setNumThreads] = useState(8);
   const [maxImageSize, setMaxImageSize] = useState(2000);
   const [resolutionLevel, setResolutionLevel] = useState(2);
-  const [maxResolution, setMaxResolution] = useState(1920);
+  const [maxResolution, setMaxResolution] = useState(1000);
   const [jobStatus, setJobStatus] = useState('idle'); // 'idle' | 'running' | 'completed' | 'cancelled' | 'failed'
   const [activeStageKey, setActiveStageKey] = useState(null);
   const [activeStageLabel, setActiveStageLabel] = useState(null);
@@ -45,13 +45,13 @@ export default function ReconstructionStudio({
       setMatcherType('sequential');
       setMaxImageSize(1600);
       setResolutionLevel(2);
-      setMaxResolution(1280);
+      setMaxResolution(1000);
       setNumThreads(8);
     } else if (preset === 'balanced') {
       setMatcherType('sequential');
       setMaxImageSize(2000);
       setResolutionLevel(2);
-      setMaxResolution(1920);
+      setMaxResolution(1000);
       setNumThreads(8);
     } else if (preset === 'full') {
       setMatcherType('exhaustive');
@@ -215,6 +215,11 @@ export default function ReconstructionStudio({
       numThreads,
       resolutionLevel,
       maxResolution,
+      minResolution: 640,
+      numberViews: pipelinePreset === 'full' ? 5 : 3,
+      subResolutionLevels: pipelinePreset === 'full' ? 2 : 1,
+      iters: pipelinePreset === 'full' ? 3 : 2,
+      geometricIters: pipelinePreset === 'full' ? 1 : 0,
       pipelinePreset,
       resume: isResume,
     });

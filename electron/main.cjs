@@ -1257,6 +1257,11 @@ function buildOpenMvsStageArgs(stage, options = {}) {
     resolutionLevel = 1,
     maxResolution = 1920,
     maxAllowedThreads,
+    minResolution,
+    numberViews,
+    subResolutionLevels,
+    iters,
+    geometricIters,
   } = options;
 
   const maxAllowed = Number.isInteger(maxAllowedThreads) && maxAllowedThreads >= 1 ? maxAllowedThreads : 4;
@@ -1291,7 +1296,7 @@ function buildOpenMvsStageArgs(stage, options = {}) {
       }
       const resLevel = Number.isInteger(resolutionLevel) && resolutionLevel >= 1 && resolutionLevel <= 4 ? resolutionLevel : 1;
       const maxRes = Number.isInteger(maxResolution) && maxResolution >= 640 && maxResolution <= 2560 ? maxResolution : 1920;
-      return [
+      const args = [
         '-i', path.normalize(path.resolve(scenePath)),
         '-o', path.normalize(path.resolve(denseScenePath)),
         '--resolution-level', String(resLevel),
@@ -1299,6 +1304,22 @@ function buildOpenMvsStageArgs(stage, options = {}) {
         '--max-threads', threadsStr,
         '-v', '2',
       ];
+      if (Number.isInteger(minResolution) && minResolution >= 320 && minResolution <= maxRes) {
+        args.push('--min-resolution', String(minResolution));
+      }
+      if (Number.isInteger(numberViews) && numberViews >= 2 && numberViews <= 20) {
+        args.push('--number-views', String(numberViews));
+      }
+      if (Number.isInteger(subResolutionLevels) && subResolutionLevels >= 1 && subResolutionLevels <= 5) {
+        args.push('--sub-resolution-levels', String(subResolutionLevels));
+      }
+      if (Number.isInteger(iters) && iters >= 1 && iters <= 10) {
+        args.push('--iters', String(iters));
+      }
+      if (Number.isInteger(geometricIters) && geometricIters >= 0 && geometricIters <= 10) {
+        args.push('--geometric-iters', String(geometricIters));
+      }
+      return args;
     }
     case 'reconstruct_mesh': {
       if (!denseScenePath || typeof denseScenePath !== 'string' || denseScenePath.includes('\0')) {
@@ -1997,7 +2018,12 @@ async function startSparseReconstructionJob(config = {}) {
     overlap: rawOverlap = 10,
     maxImageSize: rawMaxImgSize = 2000,
     resolutionLevel: rawResLevel,
-    maxResolution: rawMaxRes = 1920,
+    maxResolution: rawMaxRes,
+    minResolution: rawMinRes,
+    numberViews: rawNumViews,
+    subResolutionLevels: rawSubResLevels,
+    iters: rawIters,
+    geometricIters: rawGeoIters,
     numThreads: rawNumThreads,
     spawnProcess: customSpawn,
     colmapExe: customColmapExe,
@@ -2007,11 +2033,47 @@ async function startSparseReconstructionJob(config = {}) {
   } = config;
 
   const targetStage = ['sparse', 'dense', 'mesh'].includes(rawTargetStage) ? rawTargetStage : 'sparse';
+  const pipelinePreset = config.pipelinePreset || 'balanced';
+  const isFastOrBalanced = pipelinePreset === 'fast' || pipelinePreset === 'balanced';
+
   const matcherType = rawMatcherType === 'sequential' ? 'sequential' : 'exhaustive';
   const overlap = Number.isInteger(rawOverlap) && rawOverlap >= 2 && rawOverlap <= 50 ? rawOverlap : 10;
   const maxImageSize = Number.isInteger(rawMaxImgSize) && rawMaxImgSize > 0 ? rawMaxImgSize : (rawMaxImgSize === -1 ? -1 : 2000);
-  const resolutionLevel = Number.isInteger(rawResLevel) && rawResLevel >= 1 && rawResLevel <= 4 ? rawResLevel : (rawTargetStage === 'mesh' ? 2 : 1);
-  const maxResolution = Number.isInteger(rawMaxRes) && rawMaxRes >= 640 && rawMaxRes <= 2560 ? rawMaxRes : 1920;
+
+  // Fast manual settings: resolutionLevel 2, maxResolution 1000, minResolution 640, numberViews 3, subResolutionLevels 1, iters 2, geometricIters 0
+  const resolutionLevel = Number.isInteger(rawResLevel) && rawResLevel >= 1 && rawResLevel <= 4
+    ? rawResLevel
+    : (isFastOrBalanced ? 2 : (rawTargetStage === 'mesh' ? 2 : 1));
+
+  const defaultMaxRes = isFastOrBalanced ? 1000 : 1920;
+  const maxResolution = Number.isInteger(rawMaxRes) && rawMaxRes >= 640 && rawMaxRes <= 2560
+    ? rawMaxRes
+    : defaultMaxRes;
+
+  const minResolution = Number.isInteger(rawMinRes) && rawMinRes >= 320 && rawMinRes <= maxResolution
+    ? rawMinRes
+    : 640;
+
+  const defaultNumViews = isFastOrBalanced ? 3 : 5;
+  const numberViews = Number.isInteger(rawNumViews) && rawNumViews >= 2 && rawNumViews <= 20
+    ? rawNumViews
+    : defaultNumViews;
+
+  const defaultSubResLevels = isFastOrBalanced ? 1 : 2;
+  const subResolutionLevels = Number.isInteger(rawSubResLevels) && rawSubResLevels >= 1 && rawSubResLevels <= 5
+    ? rawSubResLevels
+    : defaultSubResLevels;
+
+  const defaultIters = isFastOrBalanced ? 2 : 3;
+  const iters = Number.isInteger(rawIters) && rawIters >= 1 && rawIters <= 10
+    ? rawIters
+    : defaultIters;
+
+  const defaultGeoIters = isFastOrBalanced ? 0 : 1;
+  const geometricIters = Number.isInteger(rawGeoIters) && rawGeoIters >= 0 && rawGeoIters <= 10
+    ? rawGeoIters
+    : defaultGeoIters;
+
   const numThreads = Number.isInteger(rawNumThreads) && rawNumThreads >= 1 && rawNumThreads <= maxSysThreads ? rawNumThreads : defaultThreads;
 
   const jobId = typeof config.jobId === 'string' && config.jobId.trim()
@@ -2152,7 +2214,7 @@ async function startSparseReconstructionJob(config = {}) {
   appendJobLog('setup', `COLMAP: ${colmapExe} (version: ${colmapVersion || 'detected'})`);
   if (targetStage === 'dense' || targetStage === 'mesh') {
     appendJobLog('setup', `OpenMVS InterfaceCOLMAP: ${interfaceColmapExe}`);
-    appendJobLog('setup', `OpenMVS DensifyPointCloud: ${densifyExe} (resLevel: ${resolutionLevel}, maxRes: ${maxResolution})`);
+    appendJobLog('setup', `OpenMVS DensifyPointCloud: ${densifyExe} (resLevel: ${resolutionLevel}, maxRes: ${maxResolution}, views: ${numberViews}, subLevels: ${subResolutionLevels}, iters: ${iters}, geoIters: ${geometricIters})`);
     if (targetStage === 'mesh') {
       appendJobLog('setup', `OpenMVS ReconstructMesh: ${reconstructMeshExe}`);
     }
@@ -2326,9 +2388,9 @@ async function startSparseReconstructionJob(config = {}) {
 
           appendJobLog(currentStage.key, `--- Starting Stage ${currentStage.num}: ${currentStage.label} ---`);
 
-          const maxNumFeatures = config.pipelinePreset === 'fast' ? 4096 : (config.pipelinePreset === 'full' ? 8192 : 6144);
-          const maxTrials = config.pipelinePreset === 'fast' ? 2500 : (config.pipelinePreset === 'full' ? 10000 : 5000);
-          const maxMatches = config.pipelinePreset === 'fast' ? 8192 : (config.pipelinePreset === 'full' ? 32768 : 16384);
+          const maxNumFeatures = (config.pipelinePreset === 'fast' || config.pipelinePreset === 'balanced') ? 4096 : (config.pipelinePreset === 'full' ? 8192 : 4096);
+          const maxTrials = (config.pipelinePreset === 'fast' || config.pipelinePreset === 'balanced') ? 2500 : (config.pipelinePreset === 'full' ? 10000 : 2500);
+          const maxMatches = (config.pipelinePreset === 'fast' || config.pipelinePreset === 'balanced') ? 8192 : (config.pipelinePreset === 'full' ? 32768 : 8192);
 
           const args = buildColmapStageArgs(currentStage.key, {
             databasePath: dbPath,
@@ -2656,11 +2718,16 @@ async function startSparseReconstructionJob(config = {}) {
           maxResolution,
           numThreads,
           maxAllowedThreads: numThreads,
+          minResolution,
+          numberViews,
+          subResolutionLevels,
+          iters,
+          geometricIters,
         });
 
         appendJobLog(
           'densify_point_cloud',
-          `Running DensifyPointCloud (resolution-level: ${resolutionLevel}, max-res: ${maxResolution}, threads: ${numThreads})...`
+          `Running DensifyPointCloud (resLevel: ${resolutionLevel}, maxRes: ${maxResolution}, minRes: ${minResolution}, views: ${numberViews}, subLevels: ${subResolutionLevels}, iters: ${iters}, geoIters: ${geometricIters}, threads: ${numThreads})...`
         );
         await runSubprocess(densifyExe, densifyArgs, 'densify_point_cloud');
       }

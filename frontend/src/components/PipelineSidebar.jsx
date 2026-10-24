@@ -215,9 +215,9 @@ export default function PipelineSidebar({
               cursor: isRunning ? 'not-allowed' : 'pointer',
             }}
           >
-            <option value="fast">⚡ Fast (~4x faster, 100+ photos)</option>
-            <option value="balanced">⚖ Balanced (Default)</option>
-            <option value="full">🎯 Full Precision (Exhaustive)</option>
+            <option value="fast">⚡ Fast (Manual speed: 1000px, 3 views, 1 level)</option>
+            <option value="balanced">⚖ Balanced (Manual fast MVS: 1000px, 3 views, 1 level)</option>
+            <option value="full">🎯 Full Precision (1920px, 5 views, 2 levels)</option>
           </select>
         </div>
 

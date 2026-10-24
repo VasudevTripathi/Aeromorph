@@ -257,6 +257,33 @@ describe('Sprint 9: OpenMVS Dense Reconstruction and Mesh Generation', () => {
     assert.throws(() => {
       buildOpenMvsStageArgs('interface_colmap', { colmapModelDir: null, scenePath, imageDir });
     }, /colmapModelDir must be a valid directory path/);
+
+    // 1g. Fast manual OpenMVS arguments (views=3, subLevels=1, iters=2, geoIters=0, resLevel=2, maxRes=1000)
+    const fastManualArgs = buildOpenMvsStageArgs('densify_point_cloud', {
+      scenePath,
+      denseScenePath,
+      resolutionLevel: 2,
+      maxResolution: 1000,
+      minResolution: 640,
+      numberViews: 3,
+      subResolutionLevels: 1,
+      iters: 2,
+      geometricIters: 0,
+      numThreads: 4,
+    });
+    assert.deepEqual(fastManualArgs, [
+      '-i', path.normalize(scenePath),
+      '-o', path.normalize(denseScenePath),
+      '--resolution-level', '2',
+      '--max-resolution', '1000',
+      '--max-threads', '4',
+      '-v', '2',
+      '--min-resolution', '640',
+      '--number-views', '3',
+      '--sub-resolution-levels', '1',
+      '--iters', '2',
+      '--geometric-iters', '0',
+    ]);
   });
 
   test('2. verifyOpenMvsScene validates valid MVS file and rejects missing or empty files', () => {
