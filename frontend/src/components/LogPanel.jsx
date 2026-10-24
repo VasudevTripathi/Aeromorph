@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Terminal, ChevronUp, ChevronDown, Trash2, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import { subscribeReconstructionLog } from '../services/desktopBridge';
 
-export default function LogPanel({ externalLogs = null, currentStage = null, jobStatus = 'idle' }) {
+export default function LogPanel({ externalLogs = null, currentStage = null, jobStatus = 'idle', stageProgress = null }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [activeTab, setActiveTab] = useState('all');
   const [internalLogs, setInternalLogs] = useState([]);
@@ -97,10 +97,16 @@ export default function LogPanel({ externalLogs = null, currentStage = null, job
 
   const getStatusBadge = () => {
     if (jobStatus === 'running') {
+      const pct = stageProgress?.percent;
+      const eta = stageProgress?.etaText;
       return (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: 'var(--accent)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: 'var(--accent)', fontSize: '11px', fontFamily: 'var(--font-mono)' }}>
           <Loader2 size={11} className="animate-spin" />
-          <span>RUNNING ({currentStage || 'Processing'})</span>
+          <span>
+            RUNNING ({currentStage || 'Processing'})
+            {pct != null ? ` • ${pct}%` : ''}
+            {eta ? ` [ETA ${eta}]` : ''}
+          </span>
         </span>
       );
     }
@@ -151,6 +157,21 @@ export default function LogPanel({ externalLogs = null, currentStage = null, job
         onDoubleClick={handleToggleMaximize}
         title="Drag up/down to resize terminal console (Double-click to expand/reset)"
       />
+
+      {/* Live progress indicator bar */}
+      {jobStatus === 'running' && (
+        <div style={{ width: '100%', height: '2.5px', background: 'rgba(213, 255, 101, 0.15)', overflow: 'hidden' }}>
+          <div
+            style={{
+              width: `${Math.min(100, Math.max(0, stageProgress?.percent || 0))}%`,
+              height: '100%',
+              background: 'var(--accent)',
+              transition: 'width 0.35s ease',
+              boxShadow: '0 0 8px var(--accent)',
+            }}
+          />
+        </div>
+      )}
 
       {/* Header bar / Click to Toggle */}
       <div

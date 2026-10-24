@@ -16,6 +16,7 @@ export default function PipelineSidebar({
   numThreads = 8,
   onNumThreadsChange = null,
   elapsedSeconds = 0,
+  stageProgress = null,
   onStartPipeline,
   onResumePipeline = null,
   onCancelPipeline,
@@ -326,6 +327,27 @@ export default function PipelineSidebar({
               <div className="stage-detail">
                 {stage.stats}
               </div>
+              {isCurrentRunning && (
+                <div style={{ marginTop: '6px' }}>
+                  <div style={{ width: '100%', height: '3.5px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '2px', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        width: `${Math.min(100, Math.max(0, stageProgress?.percent || 0))}%`,
+                        height: '100%',
+                        background: 'var(--accent)',
+                        transition: 'width 0.35s ease',
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px', fontSize: '10px', color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>
+                    <span>
+                      {stageProgress?.percent != null ? `${stageProgress.percent}%` : 'Processing'}
+                      {stageProgress?.current ? ` (${stageProgress.current}/${stageProgress.total || '?'})` : ''}
+                    </span>
+                    <span>{stageProgress?.etaText ? `ETA: ${stageProgress.etaText}` : 'Estimating ETA...'}</span>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -336,7 +358,7 @@ export default function PipelineSidebar({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', fontSize: '11px', color: 'var(--text-muted)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span>Target Concurrency</span>
-            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>4 CPU Threads</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{numThreads || 8} CPU Threads</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span>RAM Safeguard</span>
@@ -344,16 +366,25 @@ export default function PipelineSidebar({
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span>OpenMVS Setting</span>
-            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Level 1 / 1920px</span>
+            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>Level 2 / 1000px</span>
           </div>
           {isRunning && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--accent)', marginTop: '2px' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Clock size={11} />
-                <span>Elapsed</span>
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{formatTime(elapsedSeconds)}</span>
-            </div>
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)', marginTop: '3px' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Clock size={11} />
+                  <span>Elapsed</span>
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 500 }}>{formatTime(elapsedSeconds)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--accent)', marginTop: '2px' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Sparkles size={11} />
+                  <span>Est. Remaining (ETA)</span>
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{stageProgress?.etaText || 'Calculating...'}</span>
+              </div>
+            </>
           )}
         </div>
 

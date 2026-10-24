@@ -827,6 +827,108 @@ function emitReconstructionLog(entry) {
   }
 }
 
+/**
+ * Format total seconds into user-friendly ETA string
+ */
+function formatDuration(totalSeconds) {
+  if (totalSeconds == null || isNaN(totalSeconds) || totalSeconds < 0) return 'estimating...';
+  const s = Math.round(totalSeconds);
+  if (s < 60) return `~${s}s`;
+  const mins = Math.floor(s / 60);
+  const remSecs = s % 60;
+  if (mins < 60) {
+    return `~${mins}m ${remSecs < 10 ? '0' : ''}${remSecs}s`;
+  }
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `~${hrs}h ${remMins < 10 ? '0' : ''}${remMins}m`;
+}
+
+/**
+ * Extract numerical progress or image count from COLMAP and OpenMVS log lines
+ */
+function extractProgressFromLine(line, totalImages = 0) {
+  if (!line || typeof line !== 'string') return null;
+
+  // 1. OpenMVS Processing image: X (Y%, X/N) or Processing image: X (Y%)
+  const omvsImgMatch = line.match(/processing\s+image:?\s*(\d+)(?:\s*\(([0-9.]+)%\))?/i);
+  if (omvsImgMatch) {
+    const currentIdx = parseInt(omvsImgMatch[1], 10);
+    const explicitPct = omvsImgMatch[2] ? parseFloat(omvsImgMatch[2]) : null;
+    const total = totalImages > 0 ? totalImages : null;
+    const current = currentIdx + 1;
+    const percent = explicitPct != null
+      ? Math.round(explicitPct)
+      : (total ? Math.min(100, Math.round((current / total) * 100)) : null);
+    return { current, total, percent, subTask: 'Depth-Map Estimation' };
+  }
+
+  // 2. Image fractions like [12/128] or (12/128) or 12/128
+  const fractionMatch = line.match(/(?:image|file|block)?\s*\[?\(?\s*(\d+)\s*\/\s*(\d+)\s*\]?\)?/i);
+  if (fractionMatch) {
+    const current = parseInt(fractionMatch[1], 10);
+    const total = parseInt(fractionMatch[2], 10);
+    if (total > 0 && current >= 0 && current <= total) {
+      const percent = Math.min(100, Math.round((current / total) * 100));
+      return { current, total, percent };
+    }
+  }
+
+  // 3. Named percentage tasks: e.g. "Estimating depth-maps: 45%" or "Filtering views: 80%"
+  const namedPctMatch = line.match(/([A-Za-z\- ]+):\s*([0-9]{1,3})%/i);
+  if (namedPctMatch) {
+    const task = namedPctMatch[1].trim();
+    const pct = parseInt(namedPctMatch[2], 10);
+    if (!isNaN(pct) && pct >= 0 && pct <= 100) {
+      return { current: null, total: null, percent: pct, subTask: task };
+    }
+  }
+
+  // 4. Standalone percentage: e.g. "45%"
+  const pctMatch = line.match(/\b([0-9]{1,3})%/);
+  if (pctMatch) {
+    const pct = parseInt(pctMatch[1], 10);
+    if (!isNaN(pct) && pct >= 0 && pct <= 100) {
+      return { current: null, total: null, percent: pct };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Calculate estimated remaining time (ETA) based on rate of items or percentage
+ */
+function calculateStageEta(stageStartTime, percent, current, total) {
+  const elapsedMs = Math.max(1, Date.now() - stageStartTime);
+  const elapsedSec = Math.floor(elapsedMs / 1000);
+
+  if (elapsedSec < 2) {
+    return { elapsedSec, etaSec: null, etaText: 'estimating...' };
+  }
+
+  if (current != null && total != null && total > 0 && current > 0) {
+    const remainingItems = Math.max(0, total - current);
+    if (remainingItems === 0) {
+      return { elapsedSec, etaSec: 0, etaText: 'finishing...' };
+    }
+    const msPerItem = elapsedMs / current;
+    const etaSec = Math.round((remainingItems * msPerItem) / 1000);
+    return { elapsedSec, etaSec, etaText: formatDuration(etaSec) };
+  }
+
+  if (percent != null && percent > 0) {
+    if (percent >= 100) {
+      return { elapsedSec, etaSec: 0, etaText: 'finishing...' };
+    }
+    const estimatedTotalMs = (elapsedMs / percent) * 100;
+    const etaSec = Math.max(0, Math.round((estimatedTotalMs - elapsedMs) / 1000));
+    return { elapsedSec, etaSec, etaText: formatDuration(etaSec) };
+  }
+
+  return { elapsedSec, etaSec: null, etaText: 'calculating...' };
+}
+
 function terminateProcessTree(child) {
   if (!child) return;
   const pid = child.pid;
@@ -2234,12 +2336,19 @@ async function startSparseReconstructionJob(config = {}) {
     runDir,
   });
 
-  // Reusable process runner with log capture & cancellation binding
+  // Reusable process runner with live log capture, ETA estimation & cancellation binding
   const runSubprocess = (exe, args, stageKey) => {
     return new Promise((resolve, reject) => {
       if (activeReconstructionJob && activeReconstructionJob.status === 'cancelled') {
         return resolve({ cancelled: true });
       }
+
+      const stageStartTime = Date.now();
+      const totalImages = dirCheck.imageCount;
+      let lastProgressReportTime = 0;
+      let lastReportedPercent = -1;
+      let lastLoggedLine = '';
+      let logPollInterval = null;
 
       // Record any pre-existing .log files in runDir
       const initialLogs = new Set();
@@ -2250,6 +2359,102 @@ async function startSparseReconstructionJob(config = {}) {
         }
       } catch {}
 
+      const openFileOffsets = new Map();
+
+      const processStageOutputLine = (rawLine) => {
+        const trimmed = (rawLine || '').trim();
+        if (!trimmed) return;
+
+        // Skip exact consecutive duplicate line
+        if (trimmed === lastLoggedLine) return;
+        lastLoggedLine = trimmed;
+
+        appendJobLog(stageKey, trimmed);
+
+        // Check if line contains progress info
+        const progressInfo = extractProgressFromLine(trimmed, totalImages);
+        if (progressInfo && (progressInfo.percent != null || progressInfo.current != null)) {
+          const { percent, current, total, subTask } = progressInfo;
+          const etaInfo = calculateStageEta(stageStartTime, percent, current, total);
+
+          const progressPayload = {
+            percent: percent != null ? percent : 0,
+            current,
+            total,
+            subTask: subTask || '',
+            etaSeconds: etaInfo.etaSec,
+            etaText: etaInfo.etaText,
+            elapsedSeconds: etaInfo.elapsedSec,
+          };
+
+          if (activeReconstructionJob) {
+            activeReconstructionJob.stageProgress = progressPayload;
+          }
+
+          emitReconstructionProgress({
+            jobId,
+            status: 'running',
+            stage: stageKey,
+            stageLabel: activeReconstructionJob?.stageLabel,
+            stageIndex: activeReconstructionJob?.stageIndex,
+            totalStages,
+            elapsedMs: Date.now() - activeReconstructionJob.startTime,
+            stageProgress: progressPayload,
+            runDir,
+          });
+
+          // Log concise ETA progress summary in terminal console periodically (every 5% or 5s)
+          const now = Date.now();
+          const pctChanged = percent != null && Math.abs(percent - lastReportedPercent) >= 5;
+          const timeElapsed = (now - lastProgressReportTime) >= 5000;
+
+          if ((pctChanged || timeElapsed) && percent != null) {
+            lastReportedPercent = percent;
+            lastProgressReportTime = now;
+
+            const progressLabel = current != null && total != null
+              ? `[Progress: ${percent}%] (${current}/${total} photos)`
+              : `[Progress: ${percent}%]`;
+            const subTaskLabel = subTask ? ` [${subTask}]` : '';
+            const etaMsg = `${progressLabel}${subTaskLabel} — Elapsed: ${formatDuration(etaInfo.elapsedSec)} | Est. Remaining (ETA): ${etaInfo.etaText}`;
+            appendJobLog(stageKey, etaMsg);
+          }
+        }
+      };
+
+      const pollLiveLogFiles = () => {
+        try {
+          const files = fs.readdirSync(runDir);
+          for (const f of files) {
+            if (f.endsWith('.log') && !initialLogs.has(f) && f !== 'aeromorph_colmap.log') {
+              const fullLogPath = path.join(runDir, f);
+              try {
+                const stat = fs.statSync(fullLogPath);
+                const currentOffset = openFileOffsets.get(f) || 0;
+                if (stat.size > currentOffset) {
+                  const bytesToRead = stat.size - currentOffset;
+                  const buf = Buffer.alloc(bytesToRead);
+                  const fd = fs.openSync(fullLogPath, 'r');
+                  try {
+                    fs.readSync(fd, buf, 0, bytesToRead, currentOffset);
+                    openFileOffsets.set(f, stat.size);
+                  } finally {
+                    fs.closeSync(fd);
+                  }
+                  const text = buf.toString('utf8');
+                  const lines = text.split(/[\r\n]+/);
+                  for (const line of lines) {
+                    processStageOutputLine(line);
+                  }
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+      };
+
+      logPollInterval = setInterval(pollLiveLogFiles, 350);
+
       let proc;
       try {
         proc = spawnFn(exe, args, {
@@ -2258,6 +2463,7 @@ async function startSparseReconstructionJob(config = {}) {
           windowsHide: true,
         });
       } catch (spawnErr) {
+        if (logPollInterval) clearInterval(logPollInterval);
         return reject(new Error(`Failed to start ${stageKey}: ${spawnErr.message}`));
       }
 
@@ -2266,20 +2472,21 @@ async function startSparseReconstructionJob(config = {}) {
       }
 
       proc.stdout?.on('data', (chunk) => {
-        const lines = chunk.toString().split(/\r?\n/);
+        const lines = chunk.toString().split(/[\r\n]+/);
         for (const l of lines) {
-          if (l.trim()) appendJobLog(stageKey, l);
+          processStageOutputLine(l);
         }
       });
 
       proc.stderr?.on('data', (chunk) => {
-        const lines = chunk.toString().split(/\r?\n/);
+        const lines = chunk.toString().split(/[\r\n]+/);
         for (const l of lines) {
-          if (l.trim()) appendJobLog(stageKey, l);
+          processStageOutputLine(l);
         }
       });
 
       proc.on('error', (err) => {
+        if (logPollInterval) clearInterval(logPollInterval);
         if (activeReconstructionJob) {
           activeReconstructionJob.currentProcess = null;
         }
@@ -2287,6 +2494,9 @@ async function startSparseReconstructionJob(config = {}) {
       });
 
       proc.on('close', (code, signal) => {
+        if (logPollInterval) clearInterval(logPollInterval);
+        pollLiveLogFiles(); // Flush any remaining lines
+
         if (activeReconstructionJob) {
           activeReconstructionJob.currentProcess = null;
         }
@@ -2303,14 +2513,11 @@ async function startSparseReconstructionJob(config = {}) {
               const fullLogPath = path.join(runDir, f);
               try {
                 const logText = fs.readFileSync(fullLogPath, 'utf8');
-                const logLines = logText.split(/\r?\n/);
+                const logLines = logText.split(/[\r\n]+/);
                 for (const line of logLines) {
                   const trimmed = line.trim();
-                  if (trimmed) {
-                    appendJobLog(stageKey, trimmed);
-                    if (/error:|fatal:/i.test(trimmed)) {
-                      extractedErrorDetail = trimmed;
-                    }
+                  if (trimmed && /error:|fatal:/i.test(trimmed)) {
+                    extractedErrorDetail = trimmed;
                   }
                 }
               } catch {}
@@ -2319,6 +2526,8 @@ async function startSparseReconstructionJob(config = {}) {
         } catch {}
 
         if (code === 0) {
+          const stageElapsed = Math.floor((Date.now() - stageStartTime) / 1000);
+          appendJobLog(stageKey, `✓ ${activeReconstructionJob?.stageLabel || stageKey} completed in ${formatDuration(stageElapsed)}.`);
           return resolve({ code });
         }
 
@@ -3064,6 +3273,7 @@ function getReconstructionStatusJob() {
     error: activeReconstructionJob.error,
     modelStats: activeReconstructionJob.modelStats,
     plyPath: activeReconstructionJob.plyPath,
+    stageProgress: activeReconstructionJob.stageProgress || null,
     logs: activeReconstructionJob.logs.slice(-150),
   };
 }
@@ -4312,7 +4522,12 @@ ipcMain.handle('dialog:selectWorkspaceDirectory', async () => {
       overlap: Number.isInteger(config.overlap) && config.overlap >= 2 && config.overlap <= 50 ? config.overlap : 10,
       maxImageSize: Number.isInteger(config.maxImageSize) && config.maxImageSize > 0 ? config.maxImageSize : (config.maxImageSize === -1 ? -1 : 2000),
       resolutionLevel: Number.isInteger(config.resolutionLevel) && config.resolutionLevel >= 1 && config.resolutionLevel <= 4 ? config.resolutionLevel : (targetStage === 'mesh' ? 2 : 1),
-      maxResolution: Number.isInteger(config.maxResolution) && config.maxResolution >= 640 && config.maxResolution <= 2560 ? config.maxResolution : 1920,
+      maxResolution: Number.isInteger(config.maxResolution) && config.maxResolution >= 640 && config.maxResolution <= 2560 ? config.maxResolution : undefined,
+      minResolution: Number.isInteger(config.minResolution) ? config.minResolution : undefined,
+      numberViews: Number.isInteger(config.numberViews) ? config.numberViews : undefined,
+      subResolutionLevels: Number.isInteger(config.subResolutionLevels) ? config.subResolutionLevels : undefined,
+      iters: Number.isInteger(config.iters) ? config.iters : undefined,
+      geometricIters: Number.isInteger(config.geometricIters) ? config.geometricIters : undefined,
       numThreads: Number.isInteger(config.numThreads) && config.numThreads >= 1 && config.numThreads <= maxSysThreads ? config.numThreads : defaultThreads,
       resume: Boolean(config.resume),
       pipelinePreset: typeof config.pipelinePreset === 'string' ? config.pipelinePreset : 'balanced',

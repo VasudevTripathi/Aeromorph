@@ -38,6 +38,7 @@ export default function ReconstructionStudio({
   const [reconstructionLogs, setReconstructionLogs] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
   const [modelStats, setModelStats] = useState(null);
+  const [stageProgress, setStageProgress] = useState(null);
 
   const handlePresetChange = (preset) => {
     setPipelinePreset(preset);
@@ -80,6 +81,9 @@ export default function ReconstructionStudio({
         if (status.modelStats) {
           setModelStats(status.modelStats);
         }
+        if (status.stageProgress) {
+          setStageProgress(status.stageProgress);
+        }
         if (status.error) {
           setErrorMessage(status.error);
         }
@@ -99,8 +103,12 @@ export default function ReconstructionStudio({
       if (data.elapsedMs != null) {
         setElapsedSeconds(Math.floor(data.elapsedMs / 1000));
       }
+      if (data.stageProgress) {
+        setStageProgress(data.stageProgress);
+      }
 
       if (data.status === 'completed') {
+        setStageProgress(null);
         setModelStats(data.modelStats || null);
         if (data.plyPath && onAttachNativePly) {
           const isMesh = Boolean(data.modelStats?.isMesh);
@@ -123,11 +131,13 @@ export default function ReconstructionStudio({
       }
 
       if (data.status === 'failed') {
+        setStageProgress(null);
         setModelStats(null);
         setErrorMessage(data.error || 'Reconstruction failed.');
       }
 
       if (data.status === 'cancelled') {
+        setStageProgress(null);
         setModelStats(null);
       }
     });
@@ -267,6 +277,7 @@ export default function ReconstructionStudio({
         numThreads={numThreads}
         onNumThreadsChange={setNumThreads}
         elapsedSeconds={elapsedSeconds}
+        stageProgress={stageProgress}
         onStartPipeline={handleStartPipeline}
         onResumePipeline={handleResumePipeline}
         onCancelPipeline={handleCancelPipeline}
@@ -398,6 +409,7 @@ export default function ReconstructionStudio({
           externalLogs={reconstructionLogs}
           currentStage={activeStageLabel}
           jobStatus={jobStatus}
+          stageProgress={stageProgress}
         />
       </div>
     </div>

@@ -128,6 +128,11 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
       maxImageSize: typeof config.maxImageSize === 'number' ? config.maxImageSize : 2000,
       resolutionLevel: typeof config.resolutionLevel === 'number' ? config.resolutionLevel : 2,
       maxResolution: typeof config.maxResolution === 'number' ? config.maxResolution : 1920,
+      minResolution: typeof config.minResolution === 'number' ? config.minResolution : undefined,
+      numberViews: typeof config.numberViews === 'number' ? config.numberViews : undefined,
+      subResolutionLevels: typeof config.subResolutionLevels === 'number' ? config.subResolutionLevels : undefined,
+      iters: typeof config.iters === 'number' ? config.iters : undefined,
+      geometricIters: typeof config.geometricIters === 'number' ? config.geometricIters : undefined,
       numThreads: typeof config.numThreads === 'number' ? config.numThreads : undefined,
       resume: Boolean(config.resume),
       pipelinePreset: typeof config.pipelinePreset === 'string' ? config.pipelinePreset : undefined,
@@ -150,6 +155,11 @@ contextBridge.exposeInMainWorld('aeromorphAPI', {
       targetStage: typeof config.targetStage === 'string' ? config.targetStage.trim() : 'sparse',
       resolutionLevel: typeof config.resolutionLevel === 'number' ? config.resolutionLevel : 1,
       maxResolution: typeof config.maxResolution === 'number' ? config.maxResolution : 1920,
+      minResolution: typeof config.minResolution === 'number' ? config.minResolution : undefined,
+      numberViews: typeof config.numberViews === 'number' ? config.numberViews : undefined,
+      subResolutionLevels: typeof config.subResolutionLevels === 'number' ? config.subResolutionLevels : undefined,
+      iters: typeof config.iters === 'number' ? config.iters : undefined,
+      geometricIters: typeof config.geometricIters === 'number' ? config.geometricIters : undefined,
       numThreads: typeof config.numThreads === 'number' ? config.numThreads : 4,
     };
     return ipcRenderer.invoke('reconstruction:start', sanitized);
