@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 240" width="100%" height="auto" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <linearGradient id="featBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#080d1a"/>
+    </linearGradient>
+    <filter id="fGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="240" rx="12" fill="#060913" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Card 1: 3D Orbit Gimbal -->
+  <g transform="translate(30, 25)">
+    <rect width="265" height="190" rx="8" fill="url(#featBg)" stroke="#1e293b" stroke-width="1"/>
+    <!-- Icon / Graphic -->
+    <g transform="translate(132, 60)">
+      <circle cx="0" cy="0" r="28" fill="#090e1c" stroke="#1e293b"/>
+      <ellipse cx="0" cy="0" rx="28" ry="10" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="4 2"/>
+      <ellipse cx="0" cy="0" rx="10" ry="28" fill="none" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="4 2"/>
+      <circle cx="0" cy="0" r="6" fill="#38bdf8" filter="url(#fGlow)"/>
+    </g>
+    <text x="132" y="125" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-size="14" font-weight="700">6-DOF Orbit Gimbal</text>
+    <text x="132" y="148" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Smooth dampening, target lock,</text>
+    <text x="132" y="166" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">and auto-focus bounding sphere.</text>
+  </g>
+
+  <!-- Card 2: Multi-Mode Shading -->
+  <g transform="translate(320, 25)">
+    <rect width="265" height="190" rx="8" fill="url(#featBg)" stroke="#1e293b" stroke-width="1"/>
+    <g transform="translate(132, 60)">
+      <circle cx="0" cy="0" r="28" fill="#090e1c" stroke="#1e293b"/>
+      <!-- Split Cube: Left wireframe, right shaded -->
+      <polygon points="0,-18 18,-6 0,6 -18,-6" fill="#1e293b" stroke="#38bdf8" stroke-width="1"/>
+      <polygon points="-18,-6 0,6 0,20 -18,8" fill="none" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="2 2"/>
+      <polygon points="0,6 18,-6 18,8 0,20" fill="#38bdf8" opacity="0.8"/>
+    </g>
+    <text x="132" y="125" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-size="14" font-weight="700">Tri-Mode Shading</text>
+    <text x="132" y="148" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Instant switch between Shaded,</text>
+    <text x="132" y="166" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Wireframe Delaunay, &amp; RGB Points.</text>
+  </g>
+
+  <!-- Card 3: Camera Frustums -->
+  <g transform="translate(610, 25)">
+    <rect width="265" height="190" rx="8" fill="url(#featBg)" stroke="#1e293b" stroke-width="1"/>
+    <g transform="translate(132, 60)">
+      <circle cx="0" cy="0" r="28" fill="#090e1c" stroke="#1e293b"/>
+      <!-- Drone trajectory arc with camera pyramids -->
+      <path d="M -20 12 Q 0 -18 20 8" fill="none" stroke="#c084fc" stroke-width="1.4" stroke-dasharray="3 2"/>
+      <polygon points="-18,12 -12,2 -24,4" fill="#a855f7"/>
+      <polygon points="0,-10 6,-2 -4,0" fill="#c084fc"/>
+      <polygon points="18,8 14,-2 24,0" fill="#a855f7"/>
+    </g>
+    <text x="132" y="125" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-size="14" font-weight="700">Spatial Camera Poses</text>
+    <text x="132" y="148" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Visualize exact flight trajectory</text>
+    <text x="132" y="166" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">with optical center pyramids.</text>
+  </g>
+
+  <!-- Card 4: Memory Bounded PLY -->
+  <g transform="translate(900, 25)">
+    <rect width="265" height="190" rx="8" fill="url(#featBg)" stroke="#1e293b" stroke-width="1"/>
+    <g transform="translate(132, 60)">
+      <circle cx="0" cy="0" r="28" fill="#090e1c" stroke="#1e293b"/>
+      <!-- Memory Shield Icon -->
+      <path d="M 0 -18 L 18 -10 L 18 6 C 18 18 0 24 0 24 C 0 24 -18 18 -18 6 L -18 -10 Z" fill="#064e3b" stroke="#10b981" stroke-width="1.4"/>
+      <text x="0" y="8" text-anchor="middle" fill="#34d399" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">8GB</text>
+    </g>
+    <text x="132" y="125" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-size="14" font-weight="700">Zero-Crash Memory Guard</text>
+    <text x="132" y="148" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">Chunked ArrayBuffer streaming</text>
+    <text x="132" y="166" text-anchor="middle" fill="#94a3b8" font-family="sans-serif" font-size="11">prevents V8 heap exhaustion.</text>
+  </g>
+</svg>

@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">A E R O M O R P H</h1>
-  <p align="center"><strong>Autonomous Desktop Photogrammetry & 3D Reconstruction Studio</strong></p>
+  <p align="center"><strong>Workstation-Grade Desktop Photogrammetry & 3D Reconstruction Studio</strong></p>
 </p>
 
 <p align="center">
@@ -14,14 +14,20 @@
 </p>
 
 <p align="center">
-  Transform aerial drone sweeps, high-resolution photography, and 4K video footage into millimeter-accurate 3D point clouds and textured meshes — completely offline on consumer hardware.
+  <img src="./assets/hero-banner.svg" alt="Aeromorph Autonomous Desktop Photogrammetry Studio Banner" width="100%">
 </p>
 
 <p align="center">
+  Transform aerial drone sweeps, high-resolution architectural photography, and raw 4K video feeds into millimeter-accurate 3D point clouds and textured polygonal meshes — completely offline on consumer hardware.
+</p>
+
+<p align="center">
+  <a href="#executive-overview">Studio Overview</a> •
   <a href="#key-capabilities">Key Capabilities</a> •
   <a href="#photogrammetry-pipeline">Photogrammetry Pipeline</a> •
+  <a href="#viewport-studio">3D Viewport</a> •
   <a href="#system-architecture">Architecture</a> •
-  <a href="#reconstruction-presets">Profiles & Presets</a> •
+  <a href="#reconstruction-presets">Presets</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#security">Security</a>
 </p>
@@ -31,9 +37,13 @@
 <a id="executive-overview"></a>
 ## 🎯 Executive Overview
 
-**Aeromorph** solves the high-barrier dilemma of aerial photogrammetry: professional 3D reconstruction typically demands enterprise cloud subscriptions, high-end server clusters, or complex command-line scripts. 
+**Aeromorph** eliminates the cloud bottleneck in photogrammetry. Professional Structure-from-Motion (SfM) and Multi-View Stereo (MVS) typically demand expensive cloud-processing credits, complex CLI orchestration, or high-VRAM server racks. 
 
-Aeromorph packages state-of-the-art **Structure-from-Motion (SfM)** and **Multi-View Stereo (MVS)** algorithms into an intuitive, resource-conscious desktop application. Engineered from the ground up for strict local execution, Aeromorph guarantees total data sovereignty while maintaining an active memory footprint optimized for everyday laptops (tested down to 8 GB RAM with integrated graphics).
+Aeromorph packages world-class reconstruction engines into an intuitive, visually stunning desktop studio. Engineered for strict local execution, Aeromorph guarantees 100% data sovereignty while maintaining an active memory footprint optimized for everyday laptops (tested down to 8 GB RAM with integrated graphics).
+
+<p align="center">
+  <img src="./assets/studio-ui-mockup.svg" alt="Aeromorph Desktop 3D Reconstruction Studio Interface" width="100%">
+</p>
 
 ```
   ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
@@ -57,11 +67,11 @@ Aeromorph packages state-of-the-art **Structure-from-Motion (SfM)** and **Multi-
   <tr>
     <td width="50%">
       <h3>🔒 100% Offline & Data Sovereign</h3>
-      <p>Zero telemetry, zero external APIs, zero cloud compute. Your aerial survey imagery, point databases, and resulting 3D geometry never leave your local NVMe storage.</p>
+      <p>Zero telemetry, zero external APIs, zero cloud compute. Your aerial survey imagery, camera calibration parameters, point databases, and resulting 3D geometry never leave your local NVMe storage.</p>
     </td>
     <td width="50%">
       <h3>🧠 Intelligent CV Pre-Flight</h3>
-      <p>Built-in Python computer vision engine pre-screens image sets. Detects motion blur via Laplacian variance, eliminates redundant frames via 64-bit perceptual hashing (dHash), and flags exposure extremes before compute begins.</p>
+      <p>Integrated Python computer vision engine pre-screens image sets. Detects motion blur via Laplacian variance ($\sigma^2$), eliminates redundant frames via 64-bit perceptual hashing (dHash), and flags exposure anomalies before heavy compute begins.</p>
     </td>
   </tr>
   <tr>
@@ -71,13 +81,13 @@ Aeromorph packages state-of-the-art **Structure-from-Motion (SfM)** and **Multi-
     </td>
     <td width="50%">
       <h3>🎮 Native WebGL 3D Studio</h3>
-      <p>Integrated Three.js viewport featuring OrbitControls, camera pose indicators, live bounding boxes, wireframe/shaded modes, and crash-resilient streaming PLY parsers bounded to safe memory thresholds.</p>
+      <p>Integrated Three.js viewport featuring 6-DOF OrbitControls, spatial camera pose frustums, live metric bounding boxes, wireframe/shaded modes, and crash-resilient streaming PLY parsers bounded to safe memory thresholds.</p>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <h3>💻 8 GB RAM Budgeting</h3>
-      <p>Out-of-core memory management, bounded buffer streaming over Electron IPC, and intelligent image downsampling presets ensure high reliability on CPU-only machines with integrated graphics.</p>
+      <p>Out-of-core memory management, bounded buffer streaming over Electron IPC, and intelligent image downsampling presets ensure rock-solid stability on CPU-only machines with integrated graphics.</p>
     </td>
     <td width="50%">
       <h3>🎥 Smart Video Frame Ingestion</h3>
@@ -91,7 +101,11 @@ Aeromorph packages state-of-the-art **Structure-from-Motion (SfM)** and **Multi-
 <a id="photogrammetry-pipeline"></a>
 ## 🔄 Photogrammetry Pipeline
 
-Aeromorph orchestrates an automated 7-stage reconstruction sequence. Each stage runs asynchronously with real-time log tailing, cancellation handling, and intermediate artifact persistence.
+Aeromorph automates the transition from uncalibrated 2D imagery into millimeter-accurate 3D topology through a synchronized, 7-stage reconstruction sequence.
+
+<p align="center">
+  <img src="./assets/photogrammetry-stages.svg" alt="End-to-End Photogrammetry Reconstruction Timeline" width="100%">
+</p>
 
 ```mermaid
 flowchart TD
@@ -117,7 +131,8 @@ flowchart TD
     subgraph MVS_STAGE ["03 • DENSE RECONSTRUCTION & MESHING (OpenMVS)"]
         E --> F["Stage 04: Scene Export<br/>(InterfaceCOLMAP)"]:::mvs
         F --> G["Stage 05: Dense Point Cloud Fusion<br/>(DensifyPointCloud)"]:::mvs
-        G --> H["Stage 06: Surface Reconstruction<br/>(ReconstructMesh)"]:::mvs
+        H["Stage 06: Surface Reconstruction<br/>(ReconstructMesh)"]:::mvs
+        G --> H
         H --> I["Stage 07: Photorealistic UV Texturing<br/>(TextureMesh)"]:::mvs
     end
 
@@ -128,7 +143,7 @@ flowchart TD
     end
 ```
 
-### Stage Summary
+### Stage Breakdown Matrix
 
 | Step | Engine | Operation | Output Artifact | Technical Purpose |
 |:---:|:---|:---|:---|:---|
@@ -140,6 +155,29 @@ flowchart TD
 | **05** | `OpenMVS` | **Dense Point Cloud** | `scene_dense.ply` | Multi-view patch matching and depth-map fusion yielding millions of colored 3D points. |
 | **06** | `OpenMVS` | **Mesh Reconstruction** | `scene_mesh.ply` | Delaunay tetrahedralization and graph-cut surface extraction. |
 | **07** | `OpenMVS` | **Mesh Texturing** | `scene_textured.ply` | Global camera projection, seam leveling, and high-resolution texture map baking. |
+
+---
+
+<a id="viewport-studio"></a>
+## 🎮 Interactive 3D Viewport Studio
+
+Aeromorph features a full WebGL 3D inspection environment powered by **Three.js**. Examine recovered geometry in real time without leaving the application:
+
+<p align="center">
+  <img src="./assets/viewport-features.svg" alt="Aeromorph Interactive 3D Viewport Capabilities" width="100%">
+</p>
+
+### Viewport Controls Cheat-Sheet
+
+| Input | Action | Technical Behavior |
+|:---|:---|:---|
+| **Left Click + Drag** | **Orbit Camera** | Rotates spherical camera around the model's computed center-of-mass. |
+| **Right Click + Drag** | **Pan Viewport** | Translates camera position along the view plane perpendicular to the optical axis. |
+| **Scroll Wheel** | **Damped Zoom** | Logarithmic dolly zoom preventing clipping into interior geometry. |
+| **Shaded Mode** | **Solid Surface** | Evaluates face normals with studio directional illumination and ambient occlusion. |
+| **Wireframe Mode** | **Topology Inspection** | Visualizes underlying Delaunay triangular facets and polygon edge density. |
+| **Points Mode** | **Point Cloud** | Displays pure vertex positions with native per-point RGB color channels. |
+| **Reset View** | **Auto-Center** | Re-calculates minimum bounding sphere radius $R$ and positions camera at $2.2 \times R$. |
 
 ---
 
@@ -217,8 +255,8 @@ Ensure the following tools are installed on your host system:
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/aeromorph.git
-   cd aeromorph
+   git clone https://github.com/VasudevTripathi/Aeromorph.git
+   cd Aeromorph
    ```
 
 2. **Install root & frontend dependencies:**
@@ -236,7 +274,7 @@ Ensure the following tools are installed on your host system:
    ```bash
    npm run dev
    ```
-   *This starts the Vite dev server and launches the Electron application with hot-reloading and live IPC logging.*
+   *Starts the Vite dev server and launches Electron with hot-reloading and live IPC logging.*
 
 5. **Build for production:**
    ```bash
@@ -245,24 +283,15 @@ Ensure the following tools are installed on your host system:
 
 ---
 
-## 🎮 Interactive 3D Viewport Controls
-
-| Input | Action |
-|:---|:---|
-| **Left Click + Drag** | Orbit camera around center of mass |
-| **Right Click + Drag** | Pan camera laterally |
-| **Scroll Wheel** | Zoom in / out with logarithmic dampening |
-| **Shaded Mode** | Render solid mesh faces with studio directional lighting |
-| **Wireframe Mode** | Inspect Delaunay triangulation density and polygon topology |
-| **Points Mode** | Visualize raw point cloud with RGB vertex color preservation |
-| **Reset View** | Auto-focus camera on model's calculated bounding sphere |
-
----
-
 ## 📁 Repository Structure
 
 ```text
 Aeromorph/
+├── assets/                     # High-fidelity SVG diagrams & UI artwork
+│   ├── hero-banner.svg         # Animated 3D drone & mesh workstation banner
+│   ├── studio-ui-mockup.svg    # Interactive 3D studio viewport & console mockup
+│   ├── photogrammetry-stages.svg # 5-stage reconstruction visual timeline
+│   └── viewport-features.svg   # 3D viewport capabilities & gimbal controls
 ├── electron/                   # Desktop application core
 │   ├── main.cjs                # Process supervisor, IPC handlers & binary runner
 │   └── preload.cjs             # Context-isolated secure desktop bridge

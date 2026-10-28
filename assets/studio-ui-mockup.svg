@@ -1,0 +1,382 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" width="100%" height="auto" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="windowBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0b1120"/>
+      <stop offset="100%" stop-color="#070a13"/>
+    </linearGradient>
+    <linearGradient id="sidebarBg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#080e1b"/>
+      <stop offset="100%" stop-color="#0d1527"/>
+    </linearGradient>
+    <linearGradient id="viewportBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#040711"/>
+      <stop offset="100%" stop-color="#080e1e"/>
+    </linearGradient>
+    <linearGradient id="meshGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" stop-opacity="0.9"/>
+      <stop offset="50%" stop-color="#6366f1" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#a855f7" stop-opacity="0.9"/>
+    </linearGradient>
+
+    <!-- Filters -->
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="laserLineGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <style>
+      @keyframes spinProgress {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes scanSweep {
+        0% { transform: translateY(0); opacity: 0.1; }
+        50% { opacity: 0.8; }
+        100% { transform: translateY(240px); opacity: 0.1; }
+      }
+      @keyframes cursorBlink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+      }
+      @keyframes pulseNode {
+        0%, 100% { transform: scale(1); opacity: 0.5; }
+        50% { transform: scale(1.4); opacity: 1; }
+      }
+      .spin-icon { transform-box: fill-box; transform-origin: center; animation: spinProgress 2s linear infinite; }
+      .anim-scan-box { animation: scanSweep 4s ease-in-out infinite; }
+      .console-cursor { animation: cursorBlink 0.9s step-start infinite; }
+      .pulse-keypoint { transform-box: fill-box; transform-origin: center; animation: pulseNode 2.5s ease-in-out infinite; }
+    </style>
+  </defs>
+
+  <!-- Desktop Window Frame -->
+  <rect width="1200" height="680" rx="12" fill="url(#windowBg)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- ================= TOP TITLE BAR ================= -->
+  <g id="title-bar">
+    <rect width="1200" height="42" rx="12" fill="#090f1d" stroke="#1e293b" stroke-width="1"/>
+    
+    <!-- Window Control Buttons (macOS / Modern style) -->
+    <circle cx="22" cy="21" r="5" fill="#ef4444"/>
+    <circle cx="38" cy="21" r="5" fill="#f59e0b"/>
+    <circle cx="54" cy="21" r="5" fill="#10b981"/>
+
+    <!-- App Title & Breadcrumbs -->
+    <g transform="translate(85, 25)">
+      <polygon points="0,0 8,-8 16,0 8,8" fill="#38bdf8"/>
+      <text x="24" y="0" fill="#f8fafc" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700" letter-spacing="1">AEROMORPH</text>
+      <text x="120" y="0" fill="#64748b" font-family="sans-serif" font-size="11">/</text>
+      <text x="135" y="0" fill="#cbd5e1" font-family="sans-serif" font-size="11">Cathedral_Drone_Flight_04.amp</text>
+      <rect x="330" y="-12" width="62" height="18" rx="3" fill="#065f46"/>
+      <text x="338" y="1" fill="#34d399" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">RUNNING</text>
+    </g>
+
+    <!-- Top Status Badges: Memory & Preset -->
+    <g transform="translate(740, 11)">
+      <!-- Preset Indicator -->
+      <rect width="160" height="24" rx="4" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+      <text x="12" y="16" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">PRESET:</text>
+      <text x="66" y="16" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">BALANCED</text>
+
+      <!-- RAM Gauge -->
+      <g transform="translate(175, 0)">
+        <rect width="190" height="24" rx="4" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+        <text x="12" y="16" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">RAM:</text>
+        <text x="46" y="16" fill="#10b981" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">1.4 GB / 8.0 GB</text>
+        <circle cx="174" cy="12" r="4" fill="#10b981"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- ================= LEFT SIDEBAR (PIPELINE CONTROLS) ================= -->
+  <g id="sidebar" transform="translate(0, 42)">
+    <rect width="310" height="638" fill="url(#sidebarBg)" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Sidebar Header -->
+    <g transform="translate(20, 25)">
+      <text x="0" y="0" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700" letter-spacing="1.5">RECONSTRUCTION STAGES</text>
+      <text x="210" y="0" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">5 / 7 DONE</text>
+    </g>
+
+    <!-- Stage List -->
+    <g transform="translate(16, 45)">
+      <!-- Stage 1 (Done) -->
+      <g transform="translate(0, 0)">
+        <rect width="278" height="54" rx="6" fill="#0b1329" stroke="#1e293b" stroke-width="1"/>
+        <circle cx="24" cy="27" r="10" fill="#065f46"/>
+        <text x="20" y="31" fill="#34d399" font-size="12">✓</text>
+        <text x="44" y="22" fill="#f8fafc" font-family="sans-serif" font-size="12" font-weight="600">01. CV Quality Screening</text>
+        <text x="44" y="38" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">128 valid images • 0 blur</text>
+      </g>
+
+      <!-- Stage 2 (Done) -->
+      <g transform="translate(0, 62)">
+        <rect width="278" height="54" rx="6" fill="#0b1329" stroke="#1e293b" stroke-width="1"/>
+        <circle cx="24" cy="27" r="10" fill="#065f46"/>
+        <text x="20" y="31" fill="#34d399" font-size="12">✓</text>
+        <text x="44" y="22" fill="#f8fafc" font-family="sans-serif" font-size="12" font-weight="600">02. SIFT Feature Extraction</text>
+        <text x="44" y="38" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">294,102 keypoints cached</text>
+      </g>
+
+      <!-- Stage 3 (Done) -->
+      <g transform="translate(0, 124)">
+        <rect width="278" height="54" rx="6" fill="#0b1329" stroke="#1e293b" stroke-width="1"/>
+        <circle cx="24" cy="27" r="10" fill="#065f46"/>
+        <text x="20" y="31" fill="#34d399" font-size="12">✓</text>
+        <text x="44" y="22" fill="#f8fafc" font-family="sans-serif" font-size="12" font-weight="600">03. Epipolar Matching</text>
+        <text x="44" y="38" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">Sequential + Loop closure</text>
+      </g>
+
+      <!-- Stage 4 (Done) -->
+      <g transform="translate(0, 186)">
+        <rect width="278" height="54" rx="6" fill="#0b1329" stroke="#1e293b" stroke-width="1"/>
+        <circle cx="24" cy="27" r="10" fill="#065f46"/>
+        <text x="20" y="31" fill="#34d399" font-size="12">✓</text>
+        <text x="44" y="22" fill="#f8fafc" font-family="sans-serif" font-size="12" font-weight="600">04. Sparse SfM Mapper</text>
+        <text x="44" y="38" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">128/128 registered cameras</text>
+      </g>
+
+      <!-- Stage 5 (Done) -->
+      <g transform="translate(0, 248)">
+        <rect width="278" height="54" rx="6" fill="#0b1329" stroke="#1e293b" stroke-width="1"/>
+        <circle cx="24" cy="27" r="10" fill="#065f46"/>
+        <text x="20" y="31" fill="#34d399" font-size="12">✓</text>
+        <text x="44" y="22" fill="#f8fafc" font-family="sans-serif" font-size="12" font-weight="600">05. Scene Export (Interface)</text>
+        <text x="44" y="38" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10">OpenMVS scene.mvs baked</text>
+      </g>
+
+      <!-- Stage 6 (Active / Running) -->
+      <g transform="translate(0, 310)">
+        <rect width="278" height="66" rx="6" fill="#1e1b4b" stroke="#6366f1" stroke-width="1.4"/>
+        <g transform="translate(24, 27)" class="spin-icon">
+          <circle cx="0" cy="0" r="11" fill="none" stroke="#6366f1" stroke-width="2" stroke-dasharray="14 10"/>
+        </g>
+        <text x="44" y="22" fill="#e0e7ff" font-family="sans-serif" font-size="12" font-weight="700">06. Dense Point Cloud (MVS)</text>
+        <text x="44" y="38" fill="#818cf8" font-family="'JetBrains Mono', monospace" font-size="10">DensifyPointCloud • 74%</text>
+        <!-- Mini Progress Bar -->
+        <rect x="44" y="46" width="218" height="6" rx="3" fill="#0c1024"/>
+        <rect x="44" y="46" width="162" height="6" rx="3" fill="#38bdf8"/>
+      </g>
+
+      <!-- Stage 7 (Pending) -->
+      <g transform="translate(0, 384)">
+        <rect width="278" height="50" rx="6" fill="#060913" stroke="#1e293b" stroke-width="1" opacity="0.6"/>
+        <circle cx="24" cy="25" r="9" fill="#1e293b"/>
+        <text x="21" y="29" fill="#64748b" font-size="10">07</text>
+        <text x="44" y="22" fill="#64748b" font-family="sans-serif" font-size="12" font-weight="500">07. Surface Mesh &amp; Texture</text>
+        <text x="44" y="38" fill="#475569" font-family="'JetBrains Mono', monospace" font-size="9">Waiting for dense cloud</text>
+      </g>
+    </g>
+
+    <!-- Action Buttons -->
+    <g transform="translate(16, 520)">
+      <rect width="134" height="38" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <text x="32" y="24" fill="#94a3b8" font-family="sans-serif" font-size="12" font-weight="600">■ Stop Task</text>
+
+      <rect x="144" y="0" width="134" height="38" rx="6" fill="#0284c7" stroke="#38bdf8" stroke-width="1"/>
+      <text x="176" y="24" fill="#ffffff" font-family="sans-serif" font-size="12" font-weight="700">Export PLY</text>
+    </g>
+  </g>
+
+  <!-- ================= CENTER 3D VIEWPORT ================= -->
+  <g id="viewport-canvas" transform="translate(310, 42)">
+    <rect width="890" height="460" fill="url(#viewportBg)"/>
+
+    <!-- Viewport Toolbar (Floating Pill) -->
+    <g transform="translate(20, 16)">
+      <rect width="460" height="34" rx="6" fill="#090e1c" stroke="#1e293b" stroke-width="1"/>
+      <!-- Active Mode: Shaded -->
+      <rect x="4" y="4" width="76" height="26" rx="4" fill="#1e293b"/>
+      <text x="18" y="21" fill="#38bdf8" font-family="sans-serif" font-size="11" font-weight="700">Shaded</text>
+
+      <text x="96" y="21" fill="#94a3b8" font-family="sans-serif" font-size="11">Wireframe</text>
+      <text x="180" y="21" fill="#94a3b8" font-family="sans-serif" font-size="11">Points</text>
+      <line x1="234" y1="6" x2="234" y2="28" stroke="#1e293b"/>
+      <text x="246" y="21" fill="#94a3b8" font-family="sans-serif" font-size="11">Studio Light</text>
+      <line x1="334" y1="6" x2="334" y2="28" stroke="#1e293b"/>
+      <text x="346" y="21" fill="#cbd5e1" font-family="sans-serif" font-size="11">⛶ Bounding Box</text>
+      <text x="450" y="21" fill="#64748b" font-family="sans-serif" font-size="10"></text>
+    </g>
+
+    <!-- 3D Orientation Cube Gizmo (Top Right) -->
+    <g transform="translate(820, 45)">
+      <!-- Outer Ring -->
+      <circle cx="25" cy="25" r="28" fill="#070c18" stroke="#1e293b" stroke-width="1"/>
+      <polygon points="25,5 45,18 25,32 5,18" fill="#1e293b" stroke="#38bdf8" stroke-width="0.8"/>
+      <polygon points="5,18 25,32 25,50 5,36" fill="#0f172a" stroke="#38bdf8" stroke-width="0.8"/>
+      <polygon points="45,18 25,32 25,50 45,36" fill="#172554" stroke="#38bdf8" stroke-width="0.8"/>
+      <text x="21" y="22" fill="#ffffff" font-family="sans-serif" font-size="9" font-weight="bold">TOP</text>
+    </g>
+
+    <!-- 3D Perspective Ground Grid -->
+    <g opacity="0.25" stroke="#38bdf8" stroke-width="0.8">
+      <line x1="60" y1="410" x2="830" y2="410"/>
+      <line x1="120" y1="370" x2="770" y2="370"/>
+      <line x1="180" y1="330" x2="710" y2="330"/>
+      <line x1="240" y1="290" x2="650" y2="290"/>
+      <line x1="300" y1="250" x2="590" y2="250"/>
+
+      <!-- Perspective rays to vanishing point (445, 180) -->
+      <line x1="80" y1="440" x2="445" y2="200"/>
+      <line x1="220" y1="440" x2="445" y2="200"/>
+      <line x1="360" y1="440" x2="445" y2="200"/>
+      <line x1="500" y1="440" x2="445" y2="200"/>
+      <line x1="640" y1="440" x2="445" y2="200"/>
+      <line x1="780" y1="440" x2="445" y2="200"/>
+    </g>
+
+    <!-- 3D Bounding Box (Wireframe Cage around the model) -->
+    <g stroke="#38bdf8" stroke-width="1" stroke-dasharray="3 3" opacity="0.4">
+      <!-- Lower rectangle -->
+      <polygon points="260,360 630,360 580,240 210,240" fill="none"/>
+      <!-- Upper rectangle -->
+      <polygon points="260,220 630,220 580,100 210,100" fill="none"/>
+      <!-- Connecting vertical pillars -->
+      <line x1="260" y1="360" x2="260" y2="220"/>
+      <line x1="630" y1="360" x2="630" y2="220"/>
+      <line x1="580" y1="240" x2="580" y2="100"/>
+      <line x1="210" y1="240" x2="210" y2="100"/>
+    </g>
+
+    <!-- Dimension Label Pills on Bounding Box -->
+    <rect x="420" y="365" width="64" height="18" rx="3" fill="#090d16" stroke="#38bdf8" stroke-width="0.8"/>
+    <text x="427" y="378" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="9">X: 38.4m</text>
+
+    <rect x="635" y="285" width="64" height="18" rx="3" fill="#090d16" stroke="#10b981" stroke-width="0.8"/>
+    <text x="642" y="298" fill="#10b981" font-family="'JetBrains Mono', monospace" font-size="9">Z: 24.2m</text>
+
+    <!-- RECONSTRUCTED 3D ARCHITECTURAL ASSET -->
+    <g id="3d-mesh-model" transform="translate(140, 20)">
+      <!-- Shadow -->
+      <polygon points="170,330 380,310 320,240 120,250" fill="#030712" opacity="0.8"/>
+
+      <!-- Lower Cathedral Transept -->
+      <polygon points="140,290 280,340 380,290 240,250" fill="#111c38" stroke="#1d4ed8" stroke-width="1"/>
+      <polygon points="140,290 140,210 240,180 240,250" fill="#0f172a" stroke="#2563eb" stroke-width="1"/>
+      <polygon points="240,250 240,180 380,210 380,290" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+
+      <!-- Center Nave & Towers -->
+      <polygon points="180,210 180,120 230,80 230,170" fill="#1e1b4b" stroke="#818cf8" stroke-width="1.2"/>
+      <polygon points="230,170 230,80 290,110 290,200" fill="#312e81" stroke="#818cf8" stroke-width="1.2"/>
+
+      <!-- Spire / Dome Facets -->
+      <polygon points="230,80 260,30 290,110" fill="#4338ca" stroke="#c084fc" stroke-width="1.4" filter="url(#softGlow)"/>
+      <polygon points="180,120 260,30 230,80" fill="#3730a3" stroke="#a855f7" stroke-width="1.2"/>
+
+      <!-- Right Wing Facet -->
+      <polygon points="290,200 380,210 350,150 270,140" fill="#1e293b" stroke="#60a5fa" stroke-width="1"/>
+      <polygon points="270,140 350,150 330,100 260,30" fill="#1e1b4b" stroke="#818cf8" stroke-width="1"/>
+
+      <!-- Wireframe Facet Lines -->
+      <line x1="260" y1="30" x2="240" y2="180" stroke="#38bdf8" stroke-width="0.8" stroke-dasharray="2 2"/>
+      <line x1="140" y1="210" x2="280" y2="340" stroke="#38bdf8" stroke-width="0.8" stroke-dasharray="2 2"/>
+      <line x1="280" y1="340" x2="350" y2="150" stroke="#818cf8" stroke-width="0.8" stroke-dasharray="2 2"/>
+
+      <!-- Dense Point Cloud Stippling (Simulating millions of dense depth points) -->
+      <g fill="#38bdf8" opacity="0.8">
+        <circle cx="160" cy="275" r="1.5"/>
+        <circle cx="180" cy="285" r="1.5"/>
+        <circle cx="210" cy="295" r="1.5"/>
+        <circle cx="250" cy="310" r="1.5"/>
+        <circle cx="290" cy="305" r="1.5"/>
+        <circle cx="330" cy="285" r="1.5"/>
+        <circle cx="350" cy="265" r="1.5"/>
+        <circle cx="200" cy="190" r="1.5"/>
+        <circle cx="215" cy="150" r="1.5"/>
+        <circle cx="225" cy="110" r="1.5"/>
+        <circle cx="245" cy="60" r="1.5"/>
+        <circle cx="255" cy="45" r="1.8"/>
+        <circle cx="270" cy="70" r="1.5"/>
+        <circle cx="280" cy="130" r="1.5"/>
+        <circle cx="310" cy="170" r="1.5"/>
+        <circle cx="330" cy="130" r="1.5"/>
+      </g>
+
+      <!-- Keypoint Markers -->
+      <circle cx="260" cy="30" r="4" fill="#a855f7" class="pulse-keypoint" filter="url(#laserLineGlow)"/>
+      <circle cx="280" cy="340" r="3.5" fill="#38bdf8" class="pulse-keypoint" filter="url(#laserLineGlow)"/>
+      <circle cx="140" cy="210" r="3.5" fill="#00f2fe" class="pulse-keypoint" filter="url(#laserLineGlow)"/>
+      <circle cx="380" cy="210" r="3.5" fill="#10b981" class="pulse-keypoint" filter="url(#laserLineGlow)"/>
+
+      <!-- Animated Scanning Line across the 3D asset -->
+      <g class="anim-scan-box">
+        <line x1="80" y1="50" x2="420" y2="50" stroke="#00f2fe" stroke-width="2" opacity="0.8" filter="url(#laserLineGlow)"/>
+        <polygon points="80,50 420,50 390,65 110,65" fill="#00f2fe" opacity="0.12"/>
+      </g>
+    </g>
+
+    <!-- Flight Trajectory with Drone Camera Waypoints -->
+    <path d="M 80 180 Q 240 40 480 60 T 780 160" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.7"/>
+
+    <!-- Camera Waypoint 1 -->
+    <g transform="translate(180, 100)">
+      <polygon points="0,0 12,20 -12,20" fill="#38bdf8" opacity="0.6"/>
+      <circle cx="0" cy="0" r="4" fill="#38bdf8"/>
+      <text x="-14" y="-8" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="8">CAM_02</text>
+    </g>
+    <!-- Camera Waypoint 2 -->
+    <g transform="translate(360, 50)">
+      <polygon points="0,0 8,24 -8,24" fill="#38bdf8" opacity="0.8"/>
+      <circle cx="0" cy="0" r="5" fill="#00f2fe" filter="url(#laserLineGlow)"/>
+      <text x="-14" y="-8" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="8" font-weight="bold">ACTIVE #41</text>
+    </g>
+    <!-- Camera Waypoint 3 -->
+    <g transform="translate(560, 75)">
+      <polygon points="0,0 4,22 -14,20" fill="#38bdf8" opacity="0.6"/>
+      <circle cx="0" cy="0" r="4" fill="#38bdf8"/>
+      <text x="-14" y="-8" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="8">CAM_78</text>
+    </g>
+    <!-- Camera Waypoint 4 -->
+    <g transform="translate(710, 130)">
+      <polygon points="0,0 0,22 -16,16" fill="#38bdf8" opacity="0.6"/>
+      <circle cx="0" cy="0" r="4" fill="#38bdf8"/>
+      <text x="-14" y="-8" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="8">CAM_112</text>
+    </g>
+  </g>
+
+  <!-- ================= BOTTOM CONSOLE (REAL-TIME STREAMING LOGS) ================= -->
+  <g id="bottom-console" transform="translate(310, 502)">
+    <rect width="890" height="178" fill="#050811" stroke="#1e293b" stroke-width="1"/>
+
+    <!-- Console Header Bar -->
+    <rect width="890" height="26" fill="#090f1e" stroke="#1e293b" stroke-width="1"/>
+    <text x="16" y="17" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">SUBPROCESS TELEMETRY LOGS (STDOUT / STDERR)</text>
+    <rect x="740" y="5" width="134" height="16" rx="3" fill="#0f172a"/>
+    <text x="750" y="17" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="9">STREAM BUFFER: SAFE</text>
+
+    <!-- Terminal Output Lines -->
+    <g transform="translate(18, 44)">
+      <text x="0" y="0" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="11">[17:42:01.042]</text>
+      <text x="120" y="0" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="11">[InterfaceCOLMAP]</text>
+      <text x="270" y="0" fill="#cbd5e1" font-family="'JetBrains Mono', monospace" font-size="11">Scene initialized: 128 camera poses, 42,910 3D points imported.</text>
+
+      <text x="0" y="22" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="11">[17:42:04.819]</text>
+      <text x="120" y="22" fill="#818cf8" font-family="'JetBrains Mono', monospace" font-size="11">[DensifyPointCloud]</text>
+      <text x="270" y="22" fill="#cbd5e1" font-family="'JetBrains Mono', monospace" font-size="11">Allocated working volume: 8 threads, resolution level 2 (half-res).</text>
+
+      <text x="0" y="44" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="11">[17:42:18.910]</text>
+      <text x="120" y="44" fill="#818cf8" font-family="'JetBrains Mono', monospace" font-size="11">[DensifyPointCloud]</text>
+      <text x="270" y="44" fill="#cbd5e1" font-family="'JetBrains Mono', monospace" font-size="11">Depth map estimation complete: 128 / 128 views fused.</text>
+
+      <text x="0" y="66" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="11">[17:42:24.112]</text>
+      <text x="120" y="66" fill="#10b981" font-family="'JetBrains Mono', monospace" font-size="11">[DensifyPointCloud]</text>
+      <text x="270" y="66" fill="#34d399" font-family="'JetBrains Mono', monospace" font-size="11">Points filtered &amp; colored: 4,819,204 vertices saved to scene_dense.ply.</text>
+
+      <text x="0" y="88" fill="#64748b" font-family="'JetBrains Mono', monospace" font-size="11">[17:42:25.004]</text>
+      <text x="120" y="88" fill="#c084fc" font-family="'JetBrains Mono', monospace" font-size="11">[Viewport3DBridge]</text>
+      <text x="270" y="88" fill="#e2e8f0" font-family="'JetBrains Mono', monospace" font-size="11">Streaming PLY buffer: 92.4 MB (Bounded memory transfer ok) </text>
+      <rect x="750" y="77" width="8" height="13" fill="#38bdf8" class="console-cursor"/>
+    </g>
+  </g>
+</svg>

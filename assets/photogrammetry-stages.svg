@@ -1,0 +1,220 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="100%" height="auto" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0b0f19"/>
+    </linearGradient>
+    <linearGradient id="neonCyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#818cf8"/>
+    </linearGradient>
+    <linearGradient id="neonViolet" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#c084fc"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.2"/>
+      <stop offset="50%" stop-color="#38bdf8" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.2"/>
+    </linearGradient>
+
+    <filter id="cardGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <style>
+      @keyframes flowPacket {
+        0% { stroke-dashoffset: 60; }
+        100% { stroke-dashoffset: 0; }
+      }
+      @keyframes floatStage {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-4px); }
+      }
+      @keyframes pulseGlowRing {
+        0%, 100% { transform: scale(1); opacity: 0.3; }
+        50% { transform: scale(1.3); opacity: 0.8; }
+      }
+      .flow-line { stroke-dasharray: 8 6; animation: flowPacket 2s linear infinite; }
+      .stage-card:hover { filter: url(#cardGlow); }
+      .anim-ring { transform-box: fill-box; transform-origin: center; animation: pulseGlowRing 3s ease-in-out infinite; }
+    </style>
+  </defs>
+
+  <!-- Canvas Background -->
+  <rect width="1200" height="340" rx="14" fill="#070a12" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Section Header -->
+  <g transform="translate(40, 35)">
+    <text x="0" y="0" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700" letter-spacing="3">END-TO-END RECONSTRUCTION TIMELINE</text>
+    <text x="0" y="24" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="800">From Raw Pixels to Textured 3D Geometry</text>
+  </g>
+
+  <!-- Pipeline Connector Stream (Animated Dash Flow) -->
+  <g transform="translate(0, 155)">
+    <line x1="230" y1="0" x2="270" y2="0" stroke="#38bdf8" stroke-width="2" class="flow-line"/>
+    <polygon points="274,0 266,-4 266,4" fill="#38bdf8"/>
+
+    <line x1="470" y1="0" x2="510" y2="0" stroke="#818cf8" stroke-width="2" class="flow-line"/>
+    <polygon points="514,0 506,-4 506,4" fill="#818cf8"/>
+
+    <line x1="710" y1="0" x2="750" y2="0" stroke="#a855f7" stroke-width="2" class="flow-line"/>
+    <polygon points="754,0 746,-4 746,4" fill="#a855f7"/>
+
+    <line x1="950" y1="0" x2="990" y2="0" stroke="#10b981" stroke-width="2" class="flow-line"/>
+    <polygon points="994,0 986,-4 986,4" fill="#10b981"/>
+  </g>
+
+  <!-- ================= STAGE 1: INGESTION ================= -->
+  <g class="stage-card" transform="translate(40, 80)">
+    <rect width="190" height="225" rx="10" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1.2"/>
+    <rect x="0" y="0" width="190" height="4" rx="2" fill="#38bdf8"/>
+    
+    <!-- Stage Indicator -->
+    <text x="16" y="26" fill="#38bdf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">PHASE 01</text>
+    <text x="16" y="46" fill="#f8fafc" font-family="sans-serif" font-size="15" font-weight="700">Aerial Ingestion</text>
+
+    <!-- 3D Graphic: Drone & Photo Frustums -->
+    <g transform="translate(95, 105)">
+      <circle cx="0" cy="0" r="34" fill="#0f172a" stroke="#1e293b"/>
+      <!-- Stack of overlapping aerial photos -->
+      <rect x="-18" y="-14" width="28" height="20" rx="2" fill="#1e293b" stroke="#38bdf8" stroke-width="1" transform="rotate(-12)"/>
+      <rect x="-10" y="-12" width="28" height="20" rx="2" fill="#1e293b" stroke="#38bdf8" stroke-width="1" transform="rotate(6)"/>
+      <rect x="-14" y="-8" width="28" height="20" rx="2" fill="#090d16" stroke="#00f2fe" stroke-width="1.4"/>
+      <!-- Aperture circle -->
+      <circle cx="0" cy="2" r="4" fill="#38bdf8"/>
+    </g>
+
+    <!-- Details -->
+    <text x="16" y="166" fill="#94a3b8" font-family="sans-serif" font-size="11">Drone 4K Sweeps / EXIF</text>
+    <text x="16" y="184" fill="#94a3b8" font-family="sans-serif" font-size="11">Laplacian Blur Screening</text>
+    <text x="16" y="202" fill="#10b981" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="600">✓ dHash Deduplication</text>
+  </g>
+
+  <!-- ================= STAGE 2: SIFT & MATCHING ================= -->
+  <g class="stage-card" transform="translate(280, 80)">
+    <rect width="190" height="225" rx="10" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1.2"/>
+    <rect x="0" y="0" width="190" height="4" rx="2" fill="#818cf8"/>
+    
+    <text x="16" y="26" fill="#818cf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">PHASE 02</text>
+    <text x="16" y="46" fill="#f8fafc" font-family="sans-serif" font-size="15" font-weight="700">Epipolar Matching</text>
+
+    <!-- 3D Graphic: SIFT Keypoints & Epipolar Lines -->
+    <g transform="translate(95, 105)">
+      <circle cx="0" cy="0" r="34" fill="#0f172a" stroke="#1e293b"/>
+      <!-- Two intersecting epipolar rays -->
+      <line x1="-22" y1="18" x2="0" y2="-12" stroke="#818cf8" stroke-width="1.5"/>
+      <line x1="22" y1="18" x2="0" y2="-12" stroke="#818cf8" stroke-width="1.5"/>
+      <circle cx="-22" cy="18" r="3" fill="#38bdf8"/>
+      <circle cx="22" cy="18" r="3" fill="#38bdf8"/>
+      <!-- Intersection Triangulated Point -->
+      <circle cx="0" cy="-12" r="4.5" fill="#c084fc"/>
+      <!-- Triangulation wave -->
+      <circle cx="0" cy="-12" r="9" fill="none" stroke="#c084fc" stroke-width="1" class="anim-ring"/>
+    </g>
+
+    <text x="16" y="166" fill="#94a3b8" font-family="sans-serif" font-size="11">SIFT Scale-Space Octaves</text>
+    <text x="16" y="184" fill="#94a3b8" font-family="sans-serif" font-size="11">RANSAC Essential Matrix</text>
+    <text x="16" y="202" fill="#818cf8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="600">✓ Guided Sequential</text>
+  </g>
+
+  <!-- ================= STAGE 3: SPARSE SfM ================= -->
+  <g class="stage-card" transform="translate(520, 80)">
+    <rect width="190" height="225" rx="10" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1.2"/>
+    <rect x="0" y="0" width="190" height="4" rx="2" fill="#c084fc"/>
+    
+    <text x="16" y="26" fill="#c084fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">PHASE 03</text>
+    <text x="16" y="46" fill="#f8fafc" font-family="sans-serif" font-size="15" font-weight="700">Sparse SfM Cloud</text>
+
+    <!-- 3D Graphic: Recovered Camera Trajectory & Point Cluster -->
+    <g transform="translate(95, 105)">
+      <circle cx="0" cy="0" r="34" fill="#0f172a" stroke="#1e293b"/>
+      <!-- Flight trajectory arc -->
+      <path d="M -24 16 Q 0 -18 24 10" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="3 3"/>
+      <!-- Camera pyramid cones -->
+      <polygon points="-24,16 -20,10 -28,10" fill="#a855f7"/>
+      <polygon points="0,-10 4,-16 -4,-16" fill="#a855f7"/>
+      <polygon points="24,10 20,4 28,4" fill="#a855f7"/>
+      <!-- Sparse 3D points -->
+      <circle cx="-6" cy="6" r="1.5" fill="#38bdf8"/>
+      <circle cx="8" cy="8" r="1.5" fill="#38bdf8"/>
+      <circle cx="2" cy="18" r="1.5" fill="#38bdf8"/>
+      <circle cx="-14" cy="14" r="1.5" fill="#38bdf8"/>
+      <circle cx="16" cy="18" r="1.5" fill="#38bdf8"/>
+    </g>
+
+    <text x="16" y="166" fill="#94a3b8" font-family="sans-serif" font-size="11">Bundle Adjustment</text>
+    <text x="16" y="184" fill="#94a3b8" font-family="sans-serif" font-size="11">Camera Pose Recovery</text>
+    <text x="16" y="202" fill="#c084fc" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="600">✓ COLMAP Mapper</text>
+  </g>
+
+  <!-- ================= STAGE 4: DENSE MVS ================= -->
+  <g class="stage-card" transform="translate(760, 80)">
+    <rect width="190" height="225" rx="10" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1.2"/>
+    <rect x="0" y="0" width="190" height="4" rx="2" fill="#ec4899"/>
+    
+    <text x="16" y="26" fill="#ec4899" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">PHASE 04</text>
+    <text x="16" y="46" fill="#f8fafc" font-family="sans-serif" font-size="15" font-weight="700">Dense MVS Fusion</text>
+
+    <!-- 3D Graphic: Dense Point Matrix / Depth Map -->
+    <g transform="translate(95, 105)">
+      <circle cx="0" cy="0" r="34" fill="#0f172a" stroke="#1e293b"/>
+      <!-- Dense grid of colored depth points -->
+      <g opacity="0.9">
+        <circle cx="-16" cy="-12" r="1.6" fill="#38bdf8"/>
+        <circle cx="-8" cy="-14" r="1.6" fill="#38bdf8"/>
+        <circle cx="0" cy="-15" r="1.8" fill="#818cf8"/>
+        <circle cx="8" cy="-14" r="1.6" fill="#818cf8"/>
+        <circle cx="16" cy="-12" r="1.6" fill="#c084fc"/>
+
+        <circle cx="-18" cy="-4" r="1.6" fill="#38bdf8"/>
+        <circle cx="-9" cy="-5" r="1.8" fill="#38bdf8"/>
+        <circle cx="0" cy="-6" r="2" fill="#ec4899"/>
+        <circle cx="9" cy="-5" r="1.8" fill="#c084fc"/>
+        <circle cx="18" cy="-4" r="1.6" fill="#c084fc"/>
+
+        <circle cx="-16" cy="5" r="1.6" fill="#818cf8"/>
+        <circle cx="-7" cy="6" r="1.8" fill="#ec4899"/>
+        <circle cx="0" cy="8" r="2" fill="#f43f5e"/>
+        <circle cx="7" cy="6" r="1.8" fill="#ec4899"/>
+        <circle cx="16" cy="5" r="1.6" fill="#818cf8"/>
+
+        <circle cx="-12" cy="15" r="1.6" fill="#c084fc"/>
+        <circle cx="0" cy="18" r="1.8" fill="#ec4899"/>
+        <circle cx="12" cy="15" r="1.6" fill="#c084fc"/>
+      </g>
+    </g>
+
+    <text x="16" y="166" fill="#94a3b8" font-family="sans-serif" font-size="11">Multi-View PatchMatch</text>
+    <text x="16" y="184" fill="#94a3b8" font-family="sans-serif" font-size="11">Depth Map Fusion</text>
+    <text x="16" y="202" fill="#ec4899" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="600">✓ DensifyPointCloud</text>
+  </g>
+
+  <!-- ================= STAGE 5: TEXTURED MESH ================= -->
+  <g class="stage-card" transform="translate(1000, 80)">
+    <rect width="160" height="225" rx="10" fill="url(#cardGrad)" stroke="#1e293b" stroke-width="1.2"/>
+    <rect x="0" y="0" width="160" height="4" rx="2" fill="#10b981"/>
+    
+    <text x="14" y="26" fill="#10b981" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">PHASE 05</text>
+    <text x="14" y="46" fill="#f8fafc" font-family="sans-serif" font-size="15" font-weight="700">3D Mesh View</text>
+
+    <!-- 3D Graphic: Faceted Isometric Polygonal Mesh -->
+    <g transform="translate(80, 105)">
+      <circle cx="0" cy="0" r="34" fill="#0f172a" stroke="#1e293b"/>
+      <!-- Shaded 3D polygonal gem/pyramid -->
+      <polygon points="0,-20 18,-4 0,18 -18,-4" fill="#065f46" stroke="#10b981" stroke-width="1"/>
+      <polygon points="0,-20 18,-4 0,0" fill="#047857"/>
+      <polygon points="0,-20 -18,-4 0,0" fill="#10b981" opacity="0.8"/>
+      <polygon points="-18,-4 0,18 0,0" fill="#064e3b"/>
+      <polygon points="18,-4 0,18 0,0" fill="#059669"/>
+    </g>
+
+    <text x="14" y="166" fill="#94a3b8" font-family="sans-serif" font-size="11">Delaunay / Poisson</text>
+    <text x="14" y="184" fill="#94a3b8" font-family="sans-serif" font-size="11">UV Texture Baking</text>
+    <text x="14" y="202" fill="#10b981" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="600">✓ Three.js WebGL</text>
+  </g>
+</svg>
