@@ -453,25 +453,42 @@ export default function Viewport3D({
   }, [interactionMode]);
 
   // --------------------------------------------------------------------------
+  // Helper: Normalize any incoming buffer (ArrayBuffer, TypedArray, Node Buffer) to ArrayBuffer
+  // --------------------------------------------------------------------------
+  const ensureArrayBuffer = (buf) => {
+    if (!buf) return null;
+    if (buf instanceof ArrayBuffer) return buf;
+    if (ArrayBuffer.isView(buf)) {
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    }
+    if (typeof buf === 'object' && Array.isArray(buf.data)) {
+      return new Uint8Array(buf.data).buffer;
+    }
+    return buf;
+  };
+
+  // --------------------------------------------------------------------------
   // Local PLY File Loading, Validation, and Scene Integration
   // --------------------------------------------------------------------------
   const triggerFilePicker = async () => {
     if (isElectron) {
       try {
         const result = await selectNativePlyFile();
-        if (result.canceled) return;
         if (result.error) {
           setPlyError(`Native file picker error: ${result.error}`);
           return;
         }
+        if (result.canceled) return;
         if (result.path) {
           if (result.buffer) {
             setPlyError(null);
             setPlyLoadingName(result.name || result.path);
             setIsLoadingPly(true);
             const requestId = ++loadRequestIdRef.current;
-            processPlyBuffer(result.buffer, result.name, result.sizeBytes, requestId);
             activeLoadedFileRef.current = result.path;
+            setTimeout(() => {
+              processPlyBuffer(result.buffer, result.name, result.sizeBytes, requestId);
+            }, 50);
             if (onAttachNativePly) {
               onAttachNativePly({
                 path: result.path,
@@ -514,8 +531,10 @@ export default function Viewport3D({
         return;
       }
 
-      processPlyBuffer(res.buffer, fileName || res.name || 'model.ply', fileSize || res.sizeBytes || 0, requestId);
       activeLoadedFileRef.current = filePath;
+      setTimeout(() => {
+        processPlyBuffer(res.buffer, fileName || res.name || 'model.ply', fileSize || res.sizeBytes || 0, requestId);
+      }, 50);
 
       if (!isAutoLoad && onAttachNativePly) {
         onAttachNativePly({
@@ -560,8 +579,10 @@ export default function Viewport3D({
           return;
         }
 
-        processPlyBuffer(buffer, file.name, file.size, requestId);
         activeLoadedFileRef.current = file;
+        setTimeout(() => {
+          processPlyBuffer(buffer, file.name, file.size, requestId);
+        }, 50);
 
         if (!isAutoLoad && onAttachModelFile) {
           onAttachModelFile(file);
@@ -587,14 +608,18 @@ export default function Viewport3D({
     const isProjectSwitched = currentProjectIdRef.current !== currentProject?.id;
     currentProjectIdRef.current = currentProject?.id;
 
+    if (isProjectSwitched) {
+      activeLoadedFileRef.current = null;
+    }
+
     if (sessionModelFile) {
-      if (activeLoadedFileRef.current !== sessionModelFile || isProjectSwitched) {
+      if (activeLoadedFileRef.current !== sessionModelFile) {
         activeLoadedFileRef.current = sessionModelFile;
         loadPlyFromFile(sessionModelFile, true);
       }
     } else if (isElectron && currentProject?.modelFileReference?.path) {
       const nativePath = currentProject.modelFileReference.path;
-      if (activeLoadedFileRef.current !== nativePath || isProjectSwitched) {
+      if (activeLoadedFileRef.current !== nativePath) {
         activeLoadedFileRef.current = nativePath;
         loadPlyFromNativePath(
           nativePath,
@@ -603,16 +628,22 @@ export default function Viewport3D({
           true
         );
       }
-    } else {
-      // If current project has no session model file or native path, or project switched, ensure demo pavilion is shown
-      if (activeLoadedFileRef.current !== null || isProjectSwitched || (demoPavilionGroupRef.current && !demoPavilionGroupRef.current.visible)) {
-        activeLoadedFileRef.current = null;
-        handleRevertToDemo();
-      }
+    } else if (isProjectSwitched) {
+      // Only revert to demo if the user actually switched projects and has no model
+      activeLoadedFileRef.current = null;
+      handleRevertToDemo();
     }
   }, [currentProject?.id, sessionModelFile, currentProject?.modelFileReference?.path]);
 
-  const processPlyBuffer = (buffer, fileName, fileSize, requestId) => {
+  const processPlyBuffer = (rawBuffer, fileName, fileSize, requestId) => {
+    const buffer = ensureArrayBuffer(rawBuffer);
+    if (!buffer || buffer.byteLength === 0) {
+      if (requestId !== loadRequestIdRef.current) return;
+      setIsLoadingPly(false);
+      setPlyError(`The PLY model buffer for "${fileName}" is empty or invalid.`);
+      return;
+    }
+
     // 1. Inspect PLY header text to determine if genuine face elements exist
     let hasFaceElement = false;
     let declaredFaceCount = 0;
@@ -830,7 +861,7 @@ export default function Viewport3D({
     });
 
     setIsLoadingPly(false);
-    setViewportState('loaded');
+    setManualViewOverride('loaded');
   };
 
   // Revert to default Demo Pavilion

@@ -24,12 +24,12 @@ if (app && typeof app.requestSingleInstanceLock === 'function') {
 let mainWindow = null;
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
-// Bounded memory threshold for 8 GB RAM target profile (Intel integrated graphics).
-// Configurable via AEROMORPH_MAX_PLY_MB environment variable; defaults to 100 MB.
-// Enforces a strict upper ceiling of 1000 MB (1 GB) to prevent process crash or V8/WebGL exhaustion.
-// Invalid, non-numeric, zero, negative, or excessively large values safely fall back to 100 MB.
-const DEFAULT_MAX_PLY_MB = 100;
-const MAX_ALLOWED_PLY_MB = 1000;
+// Bounded memory threshold for target hardware profile.
+// Configurable via AEROMORPH_MAX_PLY_MB environment variable; defaults to 1024 MB (1 GB).
+// Enforces a strict upper ceiling of 2048 MB (2 GB) to prevent process crash or V8/WebGL exhaustion.
+// Invalid, non-numeric, zero, negative, or excessively large values safely fall back to 1024 MB.
+const DEFAULT_MAX_PLY_MB = 1024;
+const MAX_ALLOWED_PLY_MB = 2048;
 
 const rawEnvLimit = process.env.AEROMORPH_MAX_PLY_MB;
 const parsedLimitMb = rawEnvLimit && /^\d+$/.test(rawEnvLimit.trim()) ? parseInt(rawEnvLimit.trim(), 10) : NaN;
@@ -4263,25 +4263,25 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
 
     const rawPath = result.filePaths[0];
     if (typeof rawPath !== 'string' || rawPath.includes('\0')) {
-      return { canceled: true, error: 'Invalid file path.' };
+      return { canceled: false, error: 'Invalid file path.' };
     }
 
     const filePath = path.normalize(path.resolve(rawPath));
     if (path.extname(filePath).toLowerCase() !== '.ply') {
-      return { canceled: true, error: 'Selected file is not a .ply mesh.' };
+      return { canceled: false, error: 'Selected file is not a .ply mesh.' };
     }
 
     const lstat = await fs.promises.lstat(filePath);
     if (lstat.isSymbolicLink()) {
-      return { canceled: true, error: 'Symbolic links are not supported for security reasons.' };
+      return { canceled: false, error: 'Symbolic links are not supported for security reasons.' };
     }
     if (!lstat.isFile()) {
-      return { canceled: true, error: 'Selected path is not a regular file.' };
+      return { canceled: false, error: 'Selected path is not a regular file.' };
     }
 
     if (lstat.size > MAX_PLY_BYTES) {
       return {
-        canceled: true,
+        canceled: false,
         error: `PLY file exceeds safe memory threshold of ${MAX_PLY_MB} MB for this hardware profile (Selected file: ${(lstat.size / (1024 * 1024)).toFixed(1)} MB). To proceed, please decimate the mesh in CloudCompare or MeshLab to under ${MAX_PLY_MB} MB before importing, or set AEROMORPH_MAX_PLY_MB to override (up to ${MAX_ALLOWED_PLY_MB} MB).`,
       };
     }
@@ -4303,7 +4303,7 @@ ipcMain.handle('dialog:selectPlyFile', async () => {
     };
   } catch (err) {
     console.error('Aeromorph Desktop: Error selecting PLY file:', err);
-    return { canceled: true, error: err.message };
+    return { canceled: false, error: err.message };
   }
 });
 

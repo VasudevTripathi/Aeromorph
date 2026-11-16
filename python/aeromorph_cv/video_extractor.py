@@ -392,6 +392,7 @@ def extract_video_frames(
                     "timestamp_sec": round(current_time_sec, 3),
                     "status": "retained" if is_retained else "rejected",
                     "filename": out_filename,
+                    "output_filename": out_filename,
                     "output_path": out_filepath,
                     "dimensions": [w, h],
                     "blur_score": round(blur_score, 2),
@@ -399,9 +400,17 @@ def extract_video_frames(
                     "exposure_status": exposure_status,
                     "mean_brightness": exposure_info.get("mean_brightness", 0.0),
                     "contrast_std": exposure_info.get("contrast_std", 0.0),
+                    "quality_metrics": {
+                        "blur_score": round(blur_score, 2),
+                        "is_blurry": is_blurry,
+                        "exposure_status": exposure_status,
+                        "mean_brightness": exposure_info.get("mean_brightness", 0.0),
+                        "contrast_std": exposure_info.get("contrast_std", 0.0),
+                    },
                     "dhash": dhash_str,
                     "hamming_to_previous_retained": hamming_dist,
                     "rejection_reasons": reasons,
+                    "rejection_reason": reasons[0] if reasons else None,
                 }
                 frames_records.append(frame_entry)
 
@@ -476,6 +485,17 @@ def extract_video_frames(
             "filename": v_path.name,
             "size_bytes": file_size_bytes,
         },
+        "output_directory": str(out_dir),
+        "job_config": {
+            "output_dir": str(out_dir),
+            "sampling_interval": sampling_interval,
+            "max_frames": max_frames,
+            "min_dimension": min_dimension,
+            "min_blur_score": min_blur_score,
+            "max_hamming": max_hamming,
+            "filter_duplicates": filter_duplicates,
+            "filter_blur": filter_blur,
+        },
         "video_metadata": {
             "width": meta["width"],
             "height": meta["height"],
@@ -495,12 +515,17 @@ def extract_video_frames(
         },
         "summary": {
             "total_frames_sampled": sampled_count,
+            "retained_count": retained_count,
             "retained_frames_count": retained_count,
+            "rejected_count": rejected_count,
             "rejected_frames_count": rejected_count,
-            "unreadable_frames_count": unreadable_count,
-            "blurry_frames_count": blurry_count,
+            "duplicate_count": duplicate_count,
             "duplicate_frames_count": duplicate_count,
+            "rejected_blur_count": blurry_count,
+            "blurry_frames_count": blurry_count,
+            "rejected_low_res_count": low_res_count,
             "low_resolution_frames_count": low_res_count,
+            "unreadable_frames_count": unreadable_count,
             "elapsed_seconds": elapsed,
         },
         "dataset_readiness": {
@@ -539,11 +564,12 @@ def main():
     parser.add_argument("--sampling-interval", type=float, default=1.0, help="Sampling interval in seconds")
     parser.add_argument("--max-frames", type=int, default=None, help="Maximum number of frames to retain")
     parser.add_argument("--min-dimension", type=int, default=320, help="Minimum width or height")
-    parser.add_argument("--min-blur-score", type=float, default=50.0, help="Blur variance threshold")
+    parser.add_argument("--min-blur-score", "--blur-threshold", dest="min_blur_score", type=float, default=50.0, help="Blur variance threshold")
     parser.add_argument("--max-hamming", type=int, default=8, help="Max Hamming distance for near-duplicates")
     parser.add_argument("--filter-duplicates", action="store_true", default=True, help="Skip near-duplicates")
-    parser.add_argument("--no-filter-duplicates", dest="filter_duplicates", action="store_false")
+    parser.add_argument("--no-filter-duplicates", "--no-duplicate-filter", dest="filter_duplicates", action="store_false")
     parser.add_argument("--filter-blur", action="store_true", default=False, help="Discard blurry frames")
+    parser.add_argument("--no-filter-blur", "--no-blur-filter", dest="filter_blur", action="store_false")
     parser.add_argument("--check-decoder", action="store_true", help="Print decoder capabilities and exit")
 
     args = parser.parse_args()

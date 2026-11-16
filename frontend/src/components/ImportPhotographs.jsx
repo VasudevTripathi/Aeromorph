@@ -253,6 +253,60 @@ export default function ImportPhotographs({
     };
   }, []);
 
+  // Query and restore active or completed background worker jobs on mount (Sprint 7/8 state preservation)
+  useEffect(() => {
+    let isMounted = true;
+
+    // Restore video extraction worker state if active or completed
+    getVideoExtractionStatus()
+      .then((status) => {
+        if (!isMounted || !status || status.status === 'idle') return;
+        setVideoJob((prev) => ({
+          ...prev,
+          running: status.status === 'running',
+          jobId: status.id || prev.jobId,
+          progress: status.progress || prev.progress,
+          report: status.report || prev.report,
+          outputDir: status.outputDir || prev.outputDir,
+          elapsedMs: status.elapsedMs || prev.elapsedMs,
+          error: status.status === 'failed' ? status.error : (status.status === 'cancelled' ? 'Extraction cancelled by user.' : null),
+        }));
+        if (Array.isArray(status.logs) && status.logs.length > 0) {
+          setVideoLogs(status.logs);
+        }
+        if (status.videoPath) {
+          setVideoFile((prev) => prev || {
+            name: status.videoPath.split(/[/\\]/).pop(),
+            path: status.videoPath,
+          });
+          setImportMode('video');
+        }
+      })
+      .catch((err) => console.warn('Failed to query video extraction status:', err));
+
+    // Restore CV analysis worker state if active or completed
+    getCvAnalysisStatus()
+      .then((status) => {
+        if (!isMounted || !status || status.status === 'idle') return;
+        setCvJob((prev) => ({
+          ...prev,
+          running: status.status === 'running',
+          jobId: status.id || prev.jobId,
+          progress: status.progress || prev.progress,
+          report: status.report || prev.report,
+          error: status.status === 'failed' ? status.error : (status.status === 'cancelled' ? 'Analysis cancelled by user.' : null),
+        }));
+        if (Array.isArray(status.logs) && status.logs.length > 0) {
+          setCvLogs(status.logs);
+        }
+      })
+      .catch((err) => console.warn('Failed to query CV analysis status:', err));
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // Validate active project source directory on project change or directory update
   useEffect(() => {
     const dirPath = currentProject?.sourceDirectoryReference?.path;
@@ -440,7 +494,7 @@ export default function ImportPhotographs({
       alert('Please create or select an active project first.');
       return;
     }
-    const framesDir = videoJob.report?.job_config?.output_dir || videoJob.outputDir;
+    const framesDir = videoJob.report?.job_config?.output_dir || videoJob.report?.output_directory || videoJob.outputDir;
     if (!framesDir) {
       alert('No extracted frames directory found.');
       return;
@@ -1333,7 +1387,7 @@ export default function ImportPhotographs({
                     Frames Bound to Project "{currentProject?.name}"
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--text-primary)', marginTop: '2px' }}>
-                    {videoJob.report?.summary?.retained_count || 0} candidate photographs ready. You can now proceed to Studio to begin sparse reconstruction.
+                    {(videoJob.report?.summary?.retained_count ?? videoJob.report?.summary?.retained_frames_count ?? 0)} candidate photographs ready. You can now proceed to Studio to begin sparse reconstruction.
                   </div>
                 </div>
               </div>
@@ -1351,161 +1405,219 @@ export default function ImportPhotographs({
           )}
 
           {/* Extraction Summary & Quality Report (Sprint 8 Report) */}
-          {videoJob.report && (
-            <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Sparkles size={16} color="var(--accent)" />
-                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                    Video Extraction & Quality Report
-                  </span>
-                  <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.1)', color: 'var(--accent)', borderColor: 'rgba(213, 255, 101, 0.3)' }}>
-                    {videoJob.report.summary?.retained_count || 0} Retained Frames
-                  </span>
-                </div>
+          {videoJob.report && (() => {
+            const repSummary = videoJob.report.summary || {};
+            const retainedCount = repSummary.retained_count ?? repSummary.retained_frames_count ?? 0;
+            const sampledCount = repSummary.total_frames_sampled ?? 0;
+            const duplicateCount = repSummary.duplicate_count ?? repSummary.duplicate_frames_count ?? 0;
+            const blurCount = repSummary.rejected_blur_count ?? repSummary.blurry_frames_count ?? 0;
+            const lowResCount = repSummary.rejected_low_res_count ?? repSummary.low_resolution_frames_count ?? 0;
+            const outDir = videoJob.report.job_config?.output_dir || videoJob.report.output_directory || videoJob.outputDir || '';
 
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={handleUseExtractedFrames}
-                    style={{ fontSize: '12px', padding: '6px 14px', gap: '6px' }}
-                    title="Bind extracted frames to project for reconstruction"
-                  >
-                    <CheckCircle2 size={13} />
-                    <span>Use Extracted Frames for Reconstruction</span>
-                  </button>
+            return (
+              <div className="glass-panel" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Sparkles size={16} color="var(--accent)" />
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      Video Extraction & Quality Report
+                    </span>
+                    <span className="live-indicator-tag" style={{ background: 'rgba(213, 255, 101, 0.1)', color: 'var(--accent)', borderColor: 'rgba(213, 255, 101, 0.3)' }}>
+                      {retainedCount} Retained Frames
+                    </span>
+                  </div>
 
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setShowVideoDetails(!showVideoDetails)}
-                    style={{ fontSize: '11px', padding: '5px 10px' }}
-                  >
-                    <span>{showVideoDetails ? 'Hide Frame Details' : 'View Frame Listing'}</span>
-                  </button>
-                </div>
-              </div>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={handleUseExtractedFrames}
+                      style={{ fontSize: '12px', padding: '6px 14px', gap: '6px' }}
+                      title="Bind extracted frames to project for reconstruction"
+                    >
+                      <CheckCircle2 size={13} />
+                      <span>Use Extracted Frames for Reconstruction</span>
+                    </button>
 
-              {/* Statistics Metrics Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
-                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Sampled</div>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px' }}>
-                    {videoJob.report.summary?.total_frames_sampled || 0}
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => setShowVideoDetails(!showVideoDetails)}
+                      style={{ fontSize: '11px', padding: '5px 10px' }}
+                    >
+                      <span>{showVideoDetails ? 'Hide Frame Details' : 'View Frame Listing'}</span>
+                    </button>
                   </div>
                 </div>
 
-                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(213, 255, 101, 0.3)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '10.5px', color: 'var(--accent)' }}>Retained</div>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--accent)', marginTop: '2px' }}>
-                    {videoJob.report.summary?.retained_count || 0}
-                  </div>
-                </div>
-
-                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Duplicates</div>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-warning)', marginTop: '2px' }}>
-                    {videoJob.report.summary?.duplicate_count || 0}
-                  </div>
-                </div>
-
-                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Blurry</div>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--color-warning)', marginTop: '2px' }}>
-                    {videoJob.report.summary?.rejected_blur_count || 0}
-                  </div>
-                </div>
-
-                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Low Res</div>
-                  <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-muted)', marginTop: '2px' }}>
-                    {videoJob.report.summary?.rejected_low_res_count || 0}
-                  </div>
-                </div>
-
-                <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Resolution</div>
-                  <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginTop: '4px' }}>
-                    {videoJob.report.video_metadata?.width}x{videoJob.report.video_metadata?.height}
-                  </div>
-                </div>
-              </div>
-
-              {/* Output Directory Notice */}
-              <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <HardDrive size={13} color="var(--accent)" />
-                <span>Isolated Output Directory:</span>
-                <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{videoJob.report.job_config?.output_dir}</code>
-              </div>
-
-              {/* Warnings & Suggestions */}
-              {videoJob.report.warnings && videoJob.report.warnings.length > 0 && (
-                <div style={{ background: 'rgba(234, 179, 8, 0.08)', border: '1px solid var(--color-warning-dim)', padding: '10px 14px', borderRadius: '4px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <AlertTriangle size={13} />
-                    <span>Quality Warnings & Extraction Adjustments</span>
-                  </div>
-                  {videoJob.report.warnings.map((w, i) => (
-                    <div key={i} style={{ fontSize: '11px', color: 'var(--text-secondary)', marginLeft: '19px' }}>
-                      • {w}
+                {/* Statistics Metrics Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Sampled</div>
+                    <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px' }}>
+                      {sampledCount}
                     </div>
-                  ))}
-                </div>
-              )}
+                  </div>
 
-              {/* Reconstruction Educational Notice / Photogrammetry Limitations */}
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', lineHeight: '1.4' }}>
-                <strong style={{ color: 'var(--text-secondary)' }}>Note on Photogrammetry Overlap:</strong> High visual overlap (60–80%) and varied camera angles are essential for COLMAP triangulation. Frame quality filtering discards blurry and stagnant frames to improve pipeline efficiency, but does not guarantee successful sparse reconstruction.
-              </div>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(213, 255, 101, 0.3)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--accent)' }}>Retained</div>
+                    <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--accent)', marginTop: '2px' }}>
+                      {retainedCount}
+                    </div>
+                  </div>
 
-              {/* Frame Listing Table (when toggled) */}
-              {showVideoDetails && videoJob.report.frames && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                    Sampled Frames Details ({videoJob.report.frames.length} total)
-                  </span>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Duplicates</div>
+                    <div style={{ fontSize: '16px', fontWeight: 600, color: duplicateCount > 0 ? 'var(--color-warning)' : 'var(--text-primary)', marginTop: '2px' }}>
+                      {duplicateCount}
+                    </div>
+                  </div>
 
-                  <div style={{ maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '4px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'left' }}>
-                      <thead>
-                        <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
-                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>#</th>
-                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Time</th>
-                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Status</th>
-                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Filename / Reason</th>
-                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Blur Score</th>
-                          <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>dHash</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {videoJob.report.frames.slice(0, 100).map((fr, idx) => (
-                          <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{fr.frame_index}</td>
-                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{fr.timestamp_sec?.toFixed(2)}s</td>
-                            <td style={{ padding: '5px 10px' }}>
-                              <span style={{ color: fr.status === 'retained' ? 'var(--accent)' : 'var(--color-warning)', fontWeight: 500 }}>
-                                {fr.status === 'retained' ? '✓ Retained' : '✗ Discarded'}
-                              </span>
-                            </td>
-                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: fr.status === 'retained' ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                              {fr.status === 'retained' ? fr.output_filename : (fr.rejection_reason || 'Rejected')}
-                            </td>
-                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                              {fr.quality_metrics?.blur_score?.toFixed(1) || 'N/A'}
-                            </td>
-                            <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
-                              {fr.quality_metrics?.dhash_hex || 'N/A'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Blurry</div>
+                    <div style={{ fontSize: '16px', fontWeight: 600, color: blurCount > 0 ? 'var(--color-warning)' : 'var(--text-primary)', marginTop: '2px' }}>
+                      {blurCount}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Low Res</div>
+                    <div style={{ fontSize: '16px', fontWeight: 600, color: lowResCount > 0 ? 'var(--color-warning)' : 'var(--text-muted)', marginTop: '2px' }}>
+                      {lowResCount}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'var(--bg-secondary)', padding: '10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', textAlign: 'center' }}>
+                    <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Resolution</div>
+                    <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      {videoJob.report.video_metadata?.width && videoJob.report.video_metadata?.height
+                        ? `${videoJob.report.video_metadata.width}x${videoJob.report.video_metadata.height}`
+                        : '1080p'}
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
+
+                {/* Output Directory Notice */}
+                {outDir && (
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <HardDrive size={13} color="var(--accent)" />
+                    <span>Isolated Output Directory:</span>
+                    <code style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent)' }}>{outDir}</code>
+                  </div>
+                )}
+
+                {/* Dataset Readiness Assessment */}
+                {videoJob.report.dataset_readiness && (
+                  <div style={{
+                    background: videoJob.report.dataset_readiness.recommendation === 'ready'
+                      ? 'rgba(34, 197, 94, 0.08)'
+                      : videoJob.report.dataset_readiness.recommendation === 'ready_with_warnings'
+                      ? 'rgba(234, 179, 8, 0.08)'
+                      : 'rgba(239, 68, 68, 0.08)',
+                    border: `1px solid ${
+                      videoJob.report.dataset_readiness.recommendation === 'ready'
+                        ? 'rgba(34, 197, 94, 0.25)'
+                        : videoJob.report.dataset_readiness.recommendation === 'ready_with_warnings'
+                        ? 'rgba(234, 179, 8, 0.25)'
+                        : 'rgba(239, 68, 68, 0.25)'
+                    }`,
+                    padding: '12px 16px',
+                    borderRadius: 'var(--radius-sm)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', fontWeight: 600, color: videoJob.report.dataset_readiness.recommendation === 'ready' ? 'var(--color-success)' : videoJob.report.dataset_readiness.recommendation === 'ready_with_warnings' ? 'var(--color-warning)' : 'var(--color-error)' }}>
+                      <Sparkles size={14} />
+                      <span>Dataset Readiness: {videoJob.report.dataset_readiness.recommendation?.replace(/_/g, ' ').toUpperCase()}</span>
+                    </div>
+                    <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+                      {videoJob.report.dataset_readiness.summary}
+                    </div>
+                    {videoJob.report.dataset_readiness.recommendations && videoJob.report.dataset_readiness.recommendations.length > 0 && (
+                      <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                        {videoJob.report.dataset_readiness.recommendations.map((rec, i) => (
+                          <div key={i} style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                            • {rec}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Warnings & Suggestions */}
+                {videoJob.report.warnings && videoJob.report.warnings.length > 0 && (
+                  <div style={{ background: 'rgba(234, 179, 8, 0.08)', border: '1px solid var(--color-warning-dim)', padding: '10px 14px', borderRadius: '4px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ fontSize: '11.5px', fontWeight: 600, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <AlertTriangle size={13} />
+                      <span>Quality Warnings & Extraction Adjustments</span>
+                    </div>
+                    {videoJob.report.warnings.map((w, i) => (
+                      <div key={i} style={{ fontSize: '11px', color: 'var(--text-secondary)', marginLeft: '19px' }}>
+                        • {w}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Reconstruction Educational Notice / Photogrammetry Limitations */}
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px', lineHeight: '1.4' }}>
+                  <strong style={{ color: 'var(--text-secondary)' }}>Note on Photogrammetry Overlap:</strong> High visual overlap (60–80%) and varied camera angles are essential for COLMAP triangulation. Frame quality filtering discards blurry and stagnant frames to improve pipeline efficiency, but does not guarantee successful sparse reconstruction.
+                </div>
+
+                {/* Frame Listing Table (when toggled) */}
+                {showVideoDetails && videoJob.report.frames && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                      Sampled Frames Details ({videoJob.report.frames.length} total)
+                    </span>
+
+                    <div style={{ maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '4px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'left' }}>
+                        <thead>
+                          <tr style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>#</th>
+                            <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Time</th>
+                            <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Status</th>
+                            <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Filename / Reason</th>
+                            <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>Blur Score</th>
+                            <th style={{ padding: '6px 10px', color: 'var(--text-secondary)' }}>dHash</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {videoJob.report.frames.slice(0, 100).map((fr, idx) => (
+                            <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                              <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{fr.frame_index}</td>
+                              <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{fr.timestamp_sec?.toFixed(2)}s</td>
+                              <td style={{ padding: '5px 10px' }}>
+                                <span style={{ color: fr.status === 'retained' ? 'var(--accent)' : 'var(--color-warning)', fontWeight: 500 }}>
+                                  {fr.status === 'retained' ? '✓ Retained' : '✗ Discarded'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: fr.status === 'retained' ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                                {fr.status === 'retained'
+                                  ? (fr.output_filename || fr.filename)
+                                  : (fr.rejection_reason || (Array.isArray(fr.rejection_reasons) && fr.rejection_reasons.length > 0 ? fr.rejection_reasons[0] : 'Filtered'))}
+                              </td>
+                              <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                                {fr.quality_metrics?.blur_score != null
+                                  ? fr.quality_metrics.blur_score.toFixed(1)
+                                  : (fr.blur_score != null ? fr.blur_score.toFixed(1) : 'N/A')}
+                              </td>
+                              <td style={{ padding: '5px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>
+                                {fr.dhash || fr.quality_metrics?.dhash_hex || 'N/A'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 

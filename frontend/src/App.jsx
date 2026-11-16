@@ -162,7 +162,7 @@ export default function App() {
 
       {/* Main Dynamic Viewport */}
       <main className="app-content" id="main-content">
-        {currentScreen === 'home' && (
+        <div style={{ display: currentScreen === 'home' ? 'contents' : 'none' }}>
           <ProjectsHome
             projects={projects}
             activeProjectId={activeProjectId}
@@ -170,9 +170,9 @@ export default function App() {
             onOpenProject={handleOpenProject}
             onDeleteProject={handleDeleteProject}
           />
-        )}
+        </div>
 
-        {currentScreen === 'import' && (
+        <div style={{ display: currentScreen === 'import' ? 'contents' : 'none' }}>
           <ImportPhotographs
             currentProject={currentProject}
             sessionImages={sessionImages}
@@ -185,9 +185,9 @@ export default function App() {
             onNavigateHome={handleNavigateHome}
             onSelectProject={handleSelectProject}
           />
-        )}
+        </div>
 
-        {currentScreen === 'studio' && (
+        <div style={{ display: currentScreen === 'studio' ? 'contents' : 'none' }}>
           <ReconstructionStudio
             currentProject={currentProject}
             sessionModelFile={sessionModelFile}
@@ -197,7 +197,7 @@ export default function App() {
             onNavigateHome={handleNavigateHome}
             onNavigateImport={handleNavigateImport}
           />
-        )}
+        </div>
       </main>
 
       {/* Project Creation Dialog */}
